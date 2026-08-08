@@ -21,6 +21,7 @@ pub const kernel_size: PhysAddr = arch_mem.kernel_size;
 
 pub const page_size: comptime_int = arch_mem.page.page_size;
 pub const page_shift: comptime_int = arch_mem.page.page_shift;
+pub const PageIndex: type = arch_mem.page.PageIndex;
 
 pub const PageLevel = enum {
     level5,

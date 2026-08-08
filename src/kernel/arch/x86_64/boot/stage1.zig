@@ -40,7 +40,7 @@ export fn kernelEntry(boot_info: *defs.BootInfo) linksection(".boot") callconv(.
     map1Gib(lv4_tbl, lv3_tbl2, mem.kernel_base, 0);
     // Now we can switch to high address
     @"asm".writeRegister("cr3", @intFromPtr(lv4_tbl));
-    stage2.kernelMain(boot_info) catch |e| @panic(@errorName(e));
+    stage2._start(boot_info);
     unreachable;
 }
 

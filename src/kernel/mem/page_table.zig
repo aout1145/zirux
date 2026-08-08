@@ -3,13 +3,6 @@ const root = @import("root");
 const assert = std.debug.assert;
 const log = root.debug.log;
 
-pub const PageMeta = extern struct {
-    _reserved: [64]u8,
-};
-comptime {
-    assert(@sizeOf(PageMeta) == 64);
-}
-
 pub const PagingError = error{
     OutOfMemory,
     NotCanonical,

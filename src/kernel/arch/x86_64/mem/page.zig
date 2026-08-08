@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 pub const page_size = 4096;
 pub const page_shift = 12;
 pub const HardwarePTE = u64;
+pub const PageIndex = u52;
 pub const global_level = hal.PageLevel.level4;
 pub const entries_num = 512;
 
@@ -363,7 +364,7 @@ pub inline fn readPagingBase() hal.PhysAddr {
 }
 pub inline fn writePagingBase(phys_addr: hal.PhysAddr) void {
     assert(std.mem.isAlignedLog2(phys_addr, page_shift));
-    const cr3 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr3, "cr3");
+    var cr3 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr3, "cr3");
     cr3.phys = @truncate(phys_addr >> page_shift);
     arch.@"asm".writeCtrlRegister("cr3", cr3);
 }

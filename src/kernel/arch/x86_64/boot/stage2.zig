@@ -7,7 +7,26 @@ const assert = std.debug.assert;
 
 const defs = @import("defs.zig");
 
-pub fn kernelMain(boot_info: *defs.BootInfo) !void {
+var kernel_stack: [4 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
+
+pub fn _start(_: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
+    // Switch to stack in high address
+    asm volatile (
+        \\cli
+        \\movq %[new_stack], %%rsp
+        \\call kernelEntry2
+        :
+        : [new_stack] "r" (@intFromPtr(&kernel_stack) + kernel_stack.len - 0x10),
+    );
+    unreachable;
+}
+
+export fn kernelEntry2(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
+    kernelMain(boot_info) catch |e| @panic(@errorName(e));
+    unreachable;
+}
+
+fn kernelMain(boot_info: *defs.BootInfo) !void {
     // Now we enable full kernel address space!
     arch.debug.init();
     log.info(@src(), "Booting...", .{});
@@ -172,6 +191,13 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
             .descriptor_version = info.descriptor_version,
         },
     });
+    // Finally, switch to new page table
+    arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
+
+    // Deinitialize bootmm, switch to buddy
+    mem.bootmm.switchToBuddy();
+
+    mem.buddy.calcFreeMem();
 
     log.info(@src(), "Initailized memory.", .{});
 }
