@@ -1,3 +1,5 @@
+# Zirux
+
 My OS project, written by Zig.
 
 Developing...

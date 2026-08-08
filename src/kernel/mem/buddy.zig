@@ -1,5 +1,4 @@
 // Buddy Page Allocator
-// NOTE: Single-threaded
 
 const std = @import("std");
 const root = @import("root");
@@ -9,10 +8,13 @@ const PageMeta = root.mem.page.PageMeta;
 const PageOwner = root.mem.page.PageOwner;
 const PageIndex = root.hal.page.PageIndex;
 const getMeta = root.mem.page.getMeta;
+const sync = root.sync;
 
 pub const max_order: u8 = 12;
 var free_list: [max_order + 1]?PageIndex = .{null} ** (max_order + 1);
 var max_page_index: PageIndex = undefined;
+/// NOTE: When buddy_lock acquired, all PageMeta owned by Buddy are no need to lock
+var buddy_lock: sync.SpinLock = .unlocked;
 
 inline fn orderSize(order: u8) PageIndex {
     return (@as(PageIndex, 1) << @intCast(order));
@@ -21,8 +23,11 @@ inline fn getBuddy(order: u8, index: PageIndex) ?PageIndex {
     assert(index % orderSize(order) == 0);
     const buddy_index = index ^ orderSize(order);
     if (order != max_order and buddy_index < max_page_index) {
-        const meta = getMeta(buddy_index);
-        if (meta.owner == .buddy and meta.compound.order == order) {
+        const buddy_meta = getMeta(buddy_index);
+        // We cannot make sure Buddy owns buddy_page, so we lock it
+        const flag = buddy_meta.lock();
+        defer buddy_meta.unlock(flag);
+        if (buddy_meta.owner == .buddy and buddy_meta.compound.order == order) {
             return buddy_index;
         }
     }
@@ -30,10 +35,12 @@ inline fn getBuddy(order: u8, index: PageIndex) ?PageIndex {
 }
 
 /// Should not be called except by bootmm
+/// NOTE: Single-threaded
 pub fn init(max_index: PageIndex) void {
     max_page_index = max_index;
 }
 /// Should not be called except by bootmm
+/// NOTE: Single-threaded
 pub fn add(start: PageIndex, num_of_pages: usize) void {
     var index = start;
     while (index != start + num_of_pages) {
@@ -51,6 +58,7 @@ pub fn add(start: PageIndex, num_of_pages: usize) void {
     }
 }
 
+/// NOTE: Must acquire buddy_lock before call
 fn addFreeList(order: u8, index: PageIndex) void {
     assert(index % orderSize(order) == 0);
     // log.debug(@src(), "add: 0x{x} (order {})", .{ index, order });
@@ -62,9 +70,10 @@ fn addFreeList(order: u8, index: PageIndex) void {
         .head = index,
     };
     if (free_list[order]) |next_index| {
-        const next_meta = getMeta(next_index);
         meta.list.setNext(next_index);
         meta.list.setPrev(null);
+
+        const next_meta = getMeta(next_index);
         next_meta.list.setPrev(index);
     } else {
         meta.list.setNext(null);
@@ -86,7 +95,6 @@ fn addFreeList(order: u8, index: PageIndex) void {
         // Update tail pages
         for (1..orderSize(order)) |n| {
             const tail_meta = getMeta(@intCast(index + n));
-            tail_meta.* = std.mem.zeroes(PageMeta);
             tail_meta.owner = .tail;
             tail_meta.compound = .{
                 .order = order,
@@ -95,6 +103,7 @@ fn addFreeList(order: u8, index: PageIndex) void {
         }
     }
 }
+/// NOTE: Must acquire buddy_lock before call
 fn removeFreeList(index: PageIndex) void {
     const meta = getMeta(index);
     assert(meta.owner == .buddy);
@@ -114,6 +123,9 @@ fn removeFreeList(index: PageIndex) void {
 }
 
 pub fn alloc(order: u8, owner: PageOwner) ?PageIndex {
+    buddy_lock.lock();
+    defer buddy_lock.unlock();
+
     if (free_list[order] == null) {
         var current_order = order;
         while (current_order <= max_order) : (current_order += 1) {
@@ -123,25 +135,49 @@ pub fn alloc(order: u8, owner: PageOwner) ?PageIndex {
         while (current_order > order) : (current_order -= 1) {
             const index = free_list[current_order].?;
             removeFreeList(current_order);
-            addFreeList(current_order - 1, index);
-            addFreeList(current_order - 1, index ^ orderSize(current_order - 1));
+            const left_index = index;
+            const right_index = index ^ orderSize(current_order - 1);
+            assert(getMeta(left_index).owner == .buddy);
+            addFreeList(current_order - 1, left_index);
+            assert(getMeta(right_index).owner == .tail);
+            getMeta(right_index).owner = .buddy;
+            addFreeList(current_order - 1, right_index);
         }
     }
 
     const page_index = free_list[order].?;
     removeFreeList(page_index);
+
     const meta = getMeta(page_index);
     meta.owner = owner;
+    meta._refcount = .init(1);
+
     return page_index;
 }
 
-pub fn free(page_index: PageIndex) void {
+pub fn ref(page_index: PageIndex) void {
     const meta = getMeta(page_index);
-    assert(meta.owner != .unavailable);
-    addFreeList(meta.compound.order, page_index);
+    sync.ref(u32, &meta._refcount);
+}
+
+pub fn unref(page_index: PageIndex) void {
+    const meta = getMeta(page_index);
+    if (sync.unref(u32, &meta._refcount)) {
+        const buddy_flag = buddy_lock.lock();
+        defer buddy_lock.unlock(buddy_flag);
+
+        const meta_flag = meta.lock();
+        assert(meta.owner != .unavailable);
+        meta.owner = .buddy;
+        meta.unlock(meta_flag);
+        addFreeList(meta.compound.order, page_index);
+    }
 }
 
 pub fn calcFreeMem() void {
+    const buddy_flag = buddy_lock.lock();
+    defer buddy_lock.unlock(buddy_flag);
+
     var order = max_order;
     var total_cnt: usize = 0;
     while (true) : (order -= 1) {
@@ -149,8 +185,7 @@ pub fn calcFreeMem() void {
         if (free_list[order]) |first_node| {
             var node = first_node;
             cnt += 1;
-            while (getMeta(node).list.next()) |next_node| {
-                node = next_node;
+            while (getMeta(node).list.next()) |next_node| : (node = next_node) {
                 cnt += 1;
             }
         }

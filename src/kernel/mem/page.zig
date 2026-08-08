@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root");
 const page = root.hal.page;
+const sync = root.sync;
 const assert = std.debug.assert;
 const log = root.debug.log;
 
@@ -10,47 +11,57 @@ pub const PageOwner = enum(u8) {
     buddy,
     bucket,
 };
-
+pub const PageList = packed struct(u128) {
+    _has_next: bool,
+    _next: page.PageIndex,
+    _has_prev: bool,
+    _prev: page.PageIndex,
+    _reserved: @Int(.unsigned, 128 - 2 * @bitSizeOf(page.PageIndex) - 2),
+    pub inline fn next(self: PageList) ?page.PageIndex {
+        return if (self._has_next) self._next else null;
+    }
+    pub inline fn setNext(self: *PageList, page_index: ?page.PageIndex) void {
+        if (page_index) |idx| {
+            self._has_next = true;
+            self._next = idx;
+        } else {
+            self._has_next = false;
+        }
+    }
+    pub inline fn prev(self: PageList) ?page.PageIndex {
+        return if (self._has_prev) self._prev else null;
+    }
+    pub inline fn setPrev(self: *PageList, page_index: ?page.PageIndex) void {
+        if (page_index) |idx| {
+            self._has_prev = true;
+            self._prev = idx;
+        } else {
+            self._has_prev = false;
+        }
+    }
+};
+pub const PageCompound = packed struct(u64) {
+    order: u8,
+    /// The first page.
+    head: page.PageIndex,
+    _reserved: @Int(.unsigned, 64 - @bitSizeOf(page.PageIndex) - 8) = 0,
+};
+/// Remember acquire lock before any operation!
 pub const PageMeta = extern struct {
     owner: PageOwner,
+    _lock: sync.SpinLock,
     _refcount: u32,
-    compound: packed struct(u64) {
-        order: u8,
-        /// The first page.
-        head: page.PageIndex,
-        _reserved: @Int(.unsigned, 64 - @bitSizeOf(page.PageIndex) - 8) = 0,
-    },
-    list: packed struct(u128) {
-        _has_next: bool,
-        _next: page.PageIndex,
-        _has_prev: bool,
-        _prev: page.PageIndex,
-        _reserved: @Int(.unsigned, 128 - 2 * @bitSizeOf(page.PageIndex) - 2),
-        pub inline fn next(self: @This()) ?page.PageIndex {
-            return if (self._has_next) self._next else null;
-        }
-        pub inline fn setNext(self: *@This(), page_index: ?page.PageIndex) void {
-            if (page_index) |idx| {
-                self._has_next = true;
-                self._next = idx;
-            } else {
-                self._has_next = false;
-            }
-        }
-        pub inline fn prev(self: @This()) ?page.PageIndex {
-            return if (self._has_prev) self._prev else null;
-        }
-        pub inline fn setPrev(self: *@This(), page_index: ?page.PageIndex) void {
-            if (page_index) |idx| {
-                self._has_prev = true;
-                self._prev = idx;
-            } else {
-                self._has_prev = false;
-            }
-        }
-    },
-    _reserved1: u128 = 0,
-    _reserved2: u128 = 0,
+    compound: PageCompound,
+    list: PageList,
+    _reserved1: u128,
+    _reserved2: u128,
+
+    pub inline fn lock(self: *PageMeta) sync.SpinLock.Flag {
+        return self._lock.lock();
+    }
+    pub inline fn unlock(self: *PageMeta, flag: sync.SpinLock.Flag) void {
+        self._lock.unlock(flag);
+    }
 };
 comptime {
     if (@sizeOf(PageMeta) != 64) {

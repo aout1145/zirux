@@ -43,6 +43,21 @@ pub inline fn readCtrlRegister(T: type, comptime reg: []const u8) T {
 pub inline fn writeCtrlRegister(comptime reg: []const u8, val: anytype) void {
     writeRegister(reg, @bitCast(val));
 }
+pub inline fn readRflags() registers.Rflags {
+    return @bitCast(asm volatile (
+        \\pushfq
+        \\popq %[val]
+        : [val] "=r" (-> u64),
+    ));
+}
+pub inline fn writeRflags(val: registers.Rflags) void {
+    asm volatile (
+        \\pushq %[val]
+        \\popfq
+        :
+        : [val] "r" (val),
+    );
+}
 
 pub inline fn readMsr(msr: u32) u64 {
     var lo: u32 = undefined;
