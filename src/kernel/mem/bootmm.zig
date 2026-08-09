@@ -231,7 +231,7 @@ pub inline fn add(base: hal_page.PhysAddr, len: usize, @"type": RegionType) Allo
     // log.debug(@src(), "add {s}: 0x{x} - 0x{x}", .{ @tagName(@"type"), base, base + len });
     try update(&memory, &memory_count, base, len, @"type");
 }
-inline fn reserve(base: hal_page.PhysAddr, len: usize) Allocator.Error!void {
+pub inline fn reserve(base: hal_page.PhysAddr, len: usize) Allocator.Error!void {
     try update(&reserved, &reserved_count, base, len, .occupied);
 }
 

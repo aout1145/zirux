@@ -1,0 +1,213 @@
+const std = @import("std");
+const assert = std.debug.assert;
+const cpu = @import("cpu.zig");
+
+pub fn initGdt() void {
+    gdtr.base = @intFromPtr(&gdt);
+    gdt[kernel_cs_index] = SegmentDescriptor.init(
+        0,
+        std.math.maxInt(u20),
+        0x9A,
+        0xA,
+    );
+    gdt[kernel_ds_index] = SegmentDescriptor.init(
+        0,
+        std.math.maxInt(u20),
+        0x92,
+        0xC,
+    );
+    gdt[user_ds_index] = SegmentDescriptor.init(
+        0,
+        std.math.maxInt(u20),
+        0xF2,
+        0xC,
+    );
+    gdt[user_cs_index] = SegmentDescriptor.init(
+        0,
+        std.math.maxInt(u20),
+        0xFA,
+        0xA,
+    );
+    lgdt(@intFromPtr(&gdtr));
+    loadDs(kernel_ds_selector);
+    loadCs(kernel_cs_selector);
+}
+
+pub fn initTss() void {
+    const tss_ptr: *LongSegmentDescriptor = @ptrCast(@alignCast(&gdt[tss_index]));
+    tss_ptr.* = LongSegmentDescriptor.init(
+        @intFromPtr(&tss),
+        @sizeOf(TaskStateSegment) - 1,
+        0x89,
+        0x0,
+    );
+    loadTss(0, tss_index);
+}
+
+const SegmentDescriptor = packed struct(u64) {
+    limit_low: u16,
+    base_low: u24,
+    access_byte: u8,
+    limit_high: u4,
+    flags: u4,
+    base_high: u8,
+
+    pub fn initNull() SegmentDescriptor {
+        return @bitCast(@as(u64, 0));
+    }
+    pub fn init(
+        base: u32,
+        limit: u20,
+        access_byte: u8,
+        flags: u4,
+    ) SegmentDescriptor {
+        return .{
+            .limit_low = @truncate(limit),
+            .base_low = @truncate(base),
+            .access_byte = access_byte,
+            .flags = flags,
+            .limit_high = @truncate(limit >> 16),
+            .base_high = @truncate(base >> 24),
+        };
+    }
+};
+const SegmentSelector = packed struct(u16) {
+    /// Requested Privilege Level.
+    rpl: u2,
+    /// Table Indicator.
+    ti: u1 = 0,
+    /// Index.
+    index: u13,
+};
+const GdtRegister = packed struct {
+    limit: u16,
+    base: u64,
+};
+const max_num_gdt = 0x7;
+pub const kernel_cs_index = 0x01;
+pub const kernel_cs_selector: SegmentSelector = .{
+    .rpl = 0,
+    .index = kernel_cs_index,
+};
+pub const kernel_ds_index = 0x02;
+pub const kernel_ds_selector: SegmentSelector = .{
+    .rpl = 0,
+    .index = kernel_ds_index,
+};
+pub const user_ds_index = 0x03;
+pub const user_ds_selector: SegmentSelector = .{
+    .rpl = 3,
+    .index = user_ds_index,
+};
+pub const user_cs_index = 0x04;
+pub const user_cs_selector: SegmentSelector = .{
+    .rpl = 3,
+    .index = user_cs_index,
+};
+comptime {
+    // Check for SYSCALL/SYSRET
+    const kernel_cs: u16 = @bitCast(kernel_cs_selector);
+    const kernel_ds: u16 = @bitCast(kernel_ds_selector);
+    const user_cs: u16 = @bitCast(user_cs_selector);
+    const user_ds: u16 = @bitCast(user_ds_selector);
+    assert(kernel_ds == kernel_cs + 8);
+    assert(user_cs == user_ds + 8);
+}
+var gdt: [max_num_gdt]SegmentDescriptor align(16) = [_]SegmentDescriptor{
+    SegmentDescriptor.initNull(),
+} ** max_num_gdt;
+var gdtr: GdtRegister = .{
+    .limit = @sizeOf(@TypeOf(gdt)) - 1,
+    .base = undefined,
+};
+fn lgdt(val: u64) void {
+    asm volatile (
+        \\lgdt (%[gdtr])
+        :
+        : [gdtr] "r" (val),
+    );
+}
+fn loadCs(comptime selector: SegmentSelector) void {
+    asm volatile (
+        \\
+        // Push CS
+        \\mov %[cs], %%rax
+        \\push %%rax
+        // Push RIP
+        \\leaq next(%%rip), %%rax
+        \\pushq %%rax
+        \\lretq
+        \\next:
+        \\
+        :
+        : [cs] "n" (@as(u16, @bitCast(selector))),
+    );
+}
+fn loadDs(comptime selector: SegmentSelector) void {
+    asm volatile (
+        \\mov %[ds], %di
+        \\mov %%di, %%ds
+        \\mov %%di, %%es
+        \\mov %%di, %%fs
+        \\mov %%di, %%gs
+        \\mov %%di, %%ss
+        :
+        : [ds] "n" (@as(u16, @bitCast(selector))),
+        : .{ .di = true });
+}
+
+const TaskStateSegment = packed struct {
+    _reserved0: u32 = 0,
+    rsp0: u64,
+    rsp1: u64,
+    rsp2: u64,
+    _reserved1: u64 = 0,
+    ist1: u64,
+    ist2: u64,
+    ist3: u64,
+    ist4: u64,
+    ist5: u64,
+    ist6: u64,
+    ist7: u64,
+    _reserved2: u64 = 0,
+    _reserved3: u16 = 0,
+    iopb: u16,
+};
+const LongSegmentDescriptor = packed struct(u128) {
+    limit_low: u16,
+    base_low: u24,
+    access_byte: u8,
+    limit_high: u4,
+    flags: u4,
+    base_high: u40,
+    _reserved: u32 = 0,
+
+    pub fn init(
+        base: u64,
+        limit: u20,
+        access_byte: u8,
+        flags: u4,
+    ) LongSegmentDescriptor {
+        return .{
+            .limit_low = @truncate(limit),
+            .base_low = @truncate(base),
+            .access_byte = access_byte,
+            .flags = flags,
+            .limit_high = @truncate(limit >> 16),
+            .base_high = @truncate(base >> 24),
+        };
+    }
+};
+pub const tss_index = 0x05;
+pub var tss: TaskStateSegment = std.mem.zeroes(TaskStateSegment);
+fn loadTss(comptime rpl: u2, comptime index: u13) void {
+    asm volatile (
+        \\mov %[kernel_tss], %%di
+        \\ltr %%di
+        :
+        : [kernel_tss] "n" (@as(u16, @bitCast(SegmentSelector{
+            .rpl = rpl,
+            .index = index,
+          }))),
+        : .{ .di = true });
+}

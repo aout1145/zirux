@@ -26,15 +26,20 @@ export fn kernelEntry2(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{}
     unreachable;
 }
 
-fn kernelMain(boot_info: *defs.BootInfo) !void {
+fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     // Now we enable full kernel address space!
     arch.debug.init();
     log.info(@src(), "Booting...", .{});
-    if (boot_info.magic != defs.magic) {
+    if (boot_info_ptr.magic != defs.magic) {
         return error.InvalidMagic;
     }
 
+    // Copy boot_info
+    const boot_info = boot_info_ptr.*;
+
     try initMem(boot_info.memory_map, boot_info.uefi_system_table_base);
+
+    try initCpu();
 
     while (true) asm volatile ("hlt");
 }
@@ -50,8 +55,6 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
         const desc: *uefi.tables.MemoryDescriptor = @ptrFromInt(info.base + i * info.descriptor_size);
         switch (desc.type) {
             .conventional_memory,
-            .boot_services_code,
-            .loader_code,
             => {
                 try mem.bootmm.add(
                     desc.physical_start,
@@ -59,28 +62,15 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
                     .usable,
                 );
             },
-            .boot_services_data => {
+            .boot_services_code,
+            .boot_services_data,
+            .loader_code,
+            .loader_data,
+            => {
                 try mem.bootmm.add(
                     desc.physical_start,
                     desc.number_of_pages * arch.mem.page.page_size,
                     .no_alloc,
-                );
-            },
-            .loader_data => {
-                const text_start = @intFromPtr(&__kernel_text_start) - arch.mem.kernel_base;
-                const recyclable_size = text_start - desc.physical_start;
-                assert(recyclable_size % arch.mem.page.page_size == 0);
-                try mem.bootmm.add(
-                    desc.physical_start,
-                    recyclable_size,
-                    .no_alloc,
-                );
-                const unrecyclable_size = desc.number_of_pages * arch.mem.page.page_size - recyclable_size;
-                assert(unrecyclable_size % arch.mem.page.page_size == 0);
-                try mem.bootmm.add(
-                    desc.physical_start + recyclable_size,
-                    unrecyclable_size,
-                    .occupied,
                 );
             },
             .acpi_reclaim_memory => {
@@ -116,6 +106,13 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
     arch.mem.page.init();
     const pt = try mem.page_table.PageTable.init(mem.bootmm.allocator);
     // 1. Kernel area
+    try mapKernel(@intFromPtr(&__kernel_per_cpu_start), @intFromPtr(&__kernel_per_cpu_end), pt, .{
+        .writable = false,
+        .executable = false,
+        .userspace = false,
+        .global = true,
+        .cache_policy = .write_back,
+    });
     try mapKernel(@intFromPtr(&__kernel_text_start), @intFromPtr(&__kernel_text_end), pt, .{
         .writable = false,
         .executable = true,
@@ -211,9 +208,12 @@ fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTable, attr: root.hal.
     const phys_addr = start - arch.mem.kernel_base;
     const virt_addr = arch.mem.kernel_base + phys_addr;
     const page_num = (end - start) / arch.mem.page.page_size;
+    try mem.bootmm.reserve(phys_addr, end - start);
     try pt.mapRange(mem.bootmm.allocator, virt_addr, phys_addr, page_num, attr);
 }
 
+extern const __kernel_per_cpu_start: [*]const u8;
+extern const __kernel_per_cpu_end: [*]const u8;
 extern const __kernel_text_start: [*]const u8;
 extern const __kernel_text_end: [*]const u8;
 extern const __kernel_rodata_start: [*]const u8;
@@ -222,3 +222,15 @@ extern const __kernel_data_start: [*]const u8;
 extern const __kernel_data_end: [*]const u8;
 extern const __kernel_bss_start: [*]const u8;
 extern const __kernel_bss_end: [*]const u8;
+
+var val: u8 linksection(root.hal.cpu.per_cpu_section) = 114;
+
+fn initCpu() !void {
+    arch.cpu.gdt.initGdt();
+    try arch.cpu.per_cpu.init(root.mem.bucket.allocator);
+
+    // log.debug(@src(), "{}", .{arch.cpu.per_cpu.read(u8, &val)});
+    // arch.cpu.per_cpu.write(u8, &val, 90);
+    // arch.cpu.per_cpu.add(u8, &val, 1);
+    // log.debug(@src(), "{}", .{arch.cpu.per_cpu.read(u8, &val)});
+}
