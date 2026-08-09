@@ -10,7 +10,6 @@ pub const BootInfo = extern struct {
 };
 
 pub const MemoryMapInfo = extern struct {
-    key: usize,
     base: usize,
     len: usize,
     descriptor_size: usize,

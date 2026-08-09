@@ -132,7 +132,6 @@ fn bootKernel(header: std.elf.Header) !noreturn {
     const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
     const map = try bs.getMemoryMap(map_buffer);
     boot_info.memory_map = .{
-        .key = @intFromEnum(map.info.key),
         .base = @intFromPtr(map.ptr),
         .len = map.info.len,
         .descriptor_size = map.info.descriptor_size,

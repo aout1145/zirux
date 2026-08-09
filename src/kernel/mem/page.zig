@@ -5,7 +5,7 @@ const sync = root.sync;
 const assert = std.debug.assert;
 const log = root.debug.log;
 
-pub const PageOwner = enum(u8) {
+pub const PageType = enum(u8) {
     unavailable = 0,
     tail = 1,
     buddy,
@@ -48,14 +48,18 @@ pub const PageCompound = packed struct(u64) {
 };
 /// Remember acquire lock before any operation!
 pub const PageMeta = extern struct {
-    owner: PageOwner,
+    type: PageType,
     _lock: sync.SpinLock,
+    _reserved1: u16,
     _refcount: u32,
     compound: PageCompound,
     list: PageList,
-    _reserved1: u128,
-    _reserved2: u128,
+    private: u64,
+    _reserved2: [3]u64,
 
+    pub inline fn atomicIsType(self: *PageMeta, @"type": PageType) bool {
+        return @"type" == @atomicLoad(PageType, &self.type, .acquire);
+    }
     pub inline fn lock(self: *PageMeta) sync.SpinLock.Flag {
         return self._lock.lock();
     }

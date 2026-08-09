@@ -150,6 +150,7 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
     try mem.bootmm.makePageMetadata(pt);
     // 4. UEFI Runtime services area
     var efi_vaddr: usize = arch.mem.efi_runtime_base;
+    var system_table_vaddr: usize = 0;
     for (0..info.len) |i| {
         const desc: *uefi.tables.MemoryDescriptor = @ptrFromInt(info.base + i * info.descriptor_size);
         if (!desc.attribute.memory_runtime) continue;
@@ -179,13 +180,19 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
         );
         desc.virtual_start = efi_vaddr;
 
+        if (uefi_system_table_base >= desc.physical_start and
+            uefi_system_table_base < desc.physical_start + desc.number_of_pages * arch.mem.page.page_size)
+        {
+            system_table_vaddr = efi_vaddr + uefi_system_table_base - desc.physical_start;
+        }
+
         efi_vaddr += desc.number_of_pages * arch.mem.page.page_size;
     }
-    const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(uefi_system_table_base);
-    try system_table.runtime_services.setVirtualAddressMap(.{
+    const system_table_phys: *std.os.uefi.tables.SystemTable = @ptrFromInt(uefi_system_table_base);
+    try system_table_phys.runtime_services.setVirtualAddressMap(.{
         .ptr = @ptrFromInt(info.base),
         .info = .{
-            .key = @enumFromInt(info.key),
+            .key = undefined,
             .len = info.len,
             .descriptor_size = info.descriptor_size,
             .descriptor_version = info.descriptor_version,
@@ -196,8 +203,6 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
 
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();
-
-    mem.buddy.calcFreeMem();
 
     log.info(@src(), "Initailized memory.", .{});
 }

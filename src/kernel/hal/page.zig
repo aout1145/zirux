@@ -5,6 +5,9 @@ const assert = std.debug.assert;
 
 pub const PhysAddr: type = arch_mem.PhysAddr;
 pub const VirtAddr: type = arch_mem.VirtAddr;
+comptime {
+    assert(PhysAddr == VirtAddr);
+}
 
 // Direct mapping physical memory
 pub const direct_map_base: PhysAddr = arch_mem.direct_map_base;
@@ -22,6 +25,9 @@ pub const kernel_size: PhysAddr = arch_mem.kernel_size;
 pub const page_size: comptime_int = arch_mem.page.page_size;
 pub const page_shift: comptime_int = arch_mem.page.page_shift;
 pub const PageIndex: type = arch_mem.page.PageIndex;
+pub inline fn index2addr(page_index: PageIndex) PhysAddr {
+    return @as(PhysAddr, page_index) << page_shift;
+}
 
 pub const PageLevel = enum {
     level5,
