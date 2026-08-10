@@ -4,3 +4,4 @@ pub const @"asm" = @import("asm/asm.zig");
 pub const debug = @import("debug/debug.zig");
 pub const sync = @import("sync/sync.zig");
 pub const cpu = @import("cpu/cpu.zig");
+pub const intr = @import("intr/intr.zig");

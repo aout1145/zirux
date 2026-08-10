@@ -125,11 +125,39 @@ pub const FsBase = packed struct(u64) {
     pub const msr = 0xC0000100;
 
     fs_base: u64,
+
+    pub inline fn read() FsBase {
+        return @bitCast(asm volatile (
+            \\rdfsbase %[ret]
+            : [ret] "=r" (-> u64),
+        ));
+    }
+    pub inline fn write(fs_base: FsBase) void {
+        asm volatile (
+            \\wrfsbase %[fs_base]
+            :
+            : [fs_base] "r" (fs_base),
+        );
+    }
 };
 pub const GsBase = packed struct(u64) {
     pub const msr = 0xC0000101;
 
     gs_base: u64,
+
+    pub inline fn read() GsBase {
+        return @bitCast(asm volatile (
+            \\rdgsbase %[ret]
+            : [ret] "=r" (-> u64),
+        ));
+    }
+    pub inline fn write(gs_base: GsBase) void {
+        asm volatile (
+            \\wrgsbase %[gs_base]
+            :
+            : [gs_base] "r" (gs_base),
+        );
+    }
 };
 pub const KernelGsBase = packed struct(u64) {
     pub const msr = 0xC0000102;

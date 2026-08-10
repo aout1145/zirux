@@ -122,18 +122,17 @@ pub fn makeDirectMap(page_table: mem.page_table.PageTable) !void {
         //     "memory: 0x{x} - 0x{x}",
         //     .{ region.base, region.base + region.len },
         // );
+        assert(region.base() % hal_page.page_size == 0);
+        assert(region.len % hal_page.page_size == 0);
 
         if (region.type == .no_map) {
             reserved_mem += region.len;
             continue;
         }
-
-        assert(region.base() % hal_page.page_size == 0);
-        assert(region.len % hal_page.page_size == 0);
         usable_mem += region.len;
 
         if (base + len != region.base()) {
-            log.debug(@src(), "mapped memory: 0x{x} - 0x{x}", .{ base, base + len });
+            // log.debug(@src(), "mapped memory: 0x{x} - 0x{x}", .{ base, base + len });
             try page_table.mapRange(
                 allocator,
                 base + hal_page.direct_map_base,
@@ -200,7 +199,7 @@ pub fn makePageMetadata(page_table: mem.page_table.PageTable) !void {
 
     log.debug(
         @src(),
-        "Total page metadata: 0x{x} - 0x{x} ({Bi})",
+        "Page metadata: 0x{x} - 0x{x} ({Bi})",
         .{ hal_page.page_meta_base, hal_page.page_meta_base + metadata_size, metadata_size },
     );
 }

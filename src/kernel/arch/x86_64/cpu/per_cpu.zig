@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root");
 const arch = root.arch.x86_64;
+const assert = std.debug.assert;
 
 pub const section = ".per_cpu";
 
@@ -13,9 +14,19 @@ pub fn init(gpa: std.mem.Allocator) !void {
     const mem = try gpa.alignedAlloc(u8, .fromByteUnits(arch.mem.page.page_size), len);
     const init_ptr: [*]const u8 = @ptrCast(&__kernel_per_cpu_start);
     @memcpy(mem, init_ptr[0..len]);
+
     // Initialize GS.Base
-    const gs_base = @intFromPtr(mem.ptr) - (@intFromPtr(&__kernel_per_cpu_start) - arch.mem.kernel_base);
-    arch.@"asm".writeMsr(arch.@"asm".registers.GsBase.msr, gs_base);
+    var cr4 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr4, "cr4");
+    cr4.fsgsbase = true;
+    arch.@"asm".writeCtrlRegister("cr4", cr4);
+    arch.@"asm".registers.GsBase.write(.{
+        .gs_base = @intFromPtr(mem.ptr) - (@intFromPtr(&__kernel_per_cpu_start) - arch.mem.kernel_base),
+    });
+}
+
+pub inline fn ptr(T: type, pcp: *T) *T {
+    assert(arch.intr.getPreemptCount() != 0);
+    return @ptrFromInt(@intFromPtr(pcp) + arch.@"asm".registers.GsBase.read().gs_base);
 }
 
 pub inline fn read(T: type, pcp: *const T) T {

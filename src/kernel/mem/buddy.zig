@@ -14,7 +14,7 @@ pub const max_order: u8 = 12;
 var free_list: [max_order + 1]?PageIndex = .{null} ** (max_order + 1);
 var max_page_index: PageIndex = undefined;
 /// NOTE: When buddy_lock acquired, all PageMeta owned by Buddy are no need to lock
-var buddy_lock: sync.SpinLock = .unlocked;
+var buddy_lock: sync.SpinLockIrq = .unlocked;
 
 /// NOTE: Return the number of pages
 pub inline fn orderSize(order: u8) PageIndex {

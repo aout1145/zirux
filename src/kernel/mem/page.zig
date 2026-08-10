@@ -49,7 +49,7 @@ pub const PageCompound = packed struct(u64) {
 /// Remember acquire lock before any operation!
 pub const PageMeta = extern struct {
     type: PageType,
-    _lock: sync.SpinLock,
+    _lock: sync.SpinLockIrq,
     _reserved1: u16,
     _refcount: u32,
     compound: PageCompound,
@@ -60,10 +60,10 @@ pub const PageMeta = extern struct {
     pub inline fn atomicIsType(self: *PageMeta, @"type": PageType) bool {
         return @"type" == @atomicLoad(PageType, &self.type, .acquire);
     }
-    pub inline fn lock(self: *PageMeta) sync.SpinLock.Flag {
+    pub inline fn lock(self: *PageMeta) sync.SpinLockIrq.Flag {
         return self._lock.lock();
     }
-    pub inline fn unlock(self: *PageMeta, flag: sync.SpinLock.Flag) void {
+    pub inline fn unlock(self: *PageMeta, flag: sync.SpinLockIrq.Flag) void {
         self._lock.unlock(flag);
     }
 };

@@ -1,8 +1,10 @@
 const std = @import("std");
+const root = @import("root");
 const assert = std.debug.assert;
+const log = root.debug.log;
 const cpu = @import("cpu.zig");
 
-pub fn initGdt() void {
+pub fn init() void {
     gdtr.base = @intFromPtr(&gdt);
     gdt[kernel_cs_index] = SegmentDescriptor.init(
         0,
@@ -28,12 +30,6 @@ pub fn initGdt() void {
         0xFA,
         0xA,
     );
-    lgdt(@intFromPtr(&gdtr));
-    loadDs(kernel_ds_selector);
-    loadCs(kernel_cs_selector);
-}
-
-pub fn initTss() void {
     const tss_ptr: *LongSegmentDescriptor = @ptrCast(@alignCast(&gdt[tss_index]));
     tss_ptr.* = LongSegmentDescriptor.init(
         @intFromPtr(&tss),
@@ -41,6 +37,9 @@ pub fn initTss() void {
         0x89,
         0x0,
     );
+    lgdt(@intFromPtr(&gdtr));
+    loadDs(kernel_ds_selector);
+    loadCs(kernel_cs_selector);
     loadTss(0, tss_index);
 }
 

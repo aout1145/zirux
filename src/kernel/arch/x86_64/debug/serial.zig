@@ -2,7 +2,7 @@ const std = @import("std");
 const root = @import("root");
 const @"asm" = root.arch.x86_64.@"asm";
 
-pub const Ports = enum(u16) {
+pub const Port = enum(u16) {
     com1 = 0x3F8,
     com2 = 0x2F8,
     com3 = 0x3E8,
@@ -41,8 +41,7 @@ const offsets = struct {
     pub const sr = 7;
 };
 
-/// True if initialization successfully
-pub fn init(port: Ports, baud: u32) bool {
+pub fn init(port: Port, baud: u32, buffer: []u8) ?Writer {
     const p = @intFromEnum(port);
 
     @"asm".outb(0, p + offsets.ier); // Disable interrupts
@@ -62,14 +61,21 @@ pub fn init(port: Ports, baud: u32) bool {
     @"asm".outb(0b00011111, p + offsets.mcr);
     @"asm".outb(0xAE, p);
     if (@"asm".inb(p) != 0xAE) {
-        return false;
+        return null;
     }
     @"asm".outb(0b00001111, p + offsets.mcr);
 
-    return true;
+    return .{
+        .port = port,
+        .prefix = null,
+        .interface = .{
+            .buffer = buffer,
+            .vtable = &Writer.vtable,
+        },
+    };
 }
 
-pub fn write(byte: u8, port: Ports) void {
+fn write(byte: u8, port: Port) void {
     const p = @intFromEnum(port);
     // Wait until the transmitter holding buffer is empty
     while ((@"asm".inb(p + offsets.lsr) & 0b0010_0000) == 0) {
@@ -78,3 +84,41 @@ pub fn write(byte: u8, port: Ports) void {
     // Put char into the transmitter holding buffer
     @"asm".outb(byte, p);
 }
+
+pub const Writer = struct {
+    port: Port,
+    prefix: ?[]const u8,
+    interface: std.Io.Writer,
+
+    fn writeStr(self: *const Writer, str: []const u8) void {
+        for (str) |byte| {
+            write(byte, self.port);
+            if (byte == '\n') {
+                if (self.prefix) |pre| {
+                    for (pre) |prebyte| {
+                        write(prebyte, self.port);
+                    }
+                }
+            }
+        }
+    }
+    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self: *const Writer = @fieldParentPtr("interface", w);
+        self.writeStr(w.buffer[0..w.end]);
+        w.end = 0;
+        var num: usize = 0;
+        for (data[0 .. data.len - 1]) |buf| {
+            self.writeStr(buf);
+            num += buf.len;
+        }
+        for (0..splat) |_| {
+            const buf = data[data.len - 1];
+            self.writeStr(buf);
+            num += buf.len;
+        }
+        return num;
+    }
+    pub const vtable: std.Io.Writer.VTable = .{
+        .drain = drain,
+    };
+};

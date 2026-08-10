@@ -1,10 +1,15 @@
 const std = @import("std");
 const root = @import("root");
 
-const print = root.hal.debug.print;
+const println = root.hal.debug.println;
 
-inline fn log(comptime level: []const u8, comptime src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
-    print("{s} {s}:{} " ++ fmt ++ "\n", .{ level, src.file, src.line } ++ args);
+inline fn log(
+    comptime level: []const u8,
+    comptime src: std.builtin.SourceLocation,
+    comptime fmt: []const u8,
+    args: anytype,
+) void {
+    println(std.fmt.comptimePrint("{s} {s}:{} ", .{ level, src.file, src.line }), fmt, args);
 }
 pub inline fn debug(comptime src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
     if (@import("builtin").mode == .Debug) {

@@ -26,7 +26,7 @@ comptime {
 }
 
 var bucket_list: [bucket_sizes_num]?hal_page.PageIndex = .{null} ** bucket_sizes_num;
-var bucket_lock: sync.SpinLock = .unlocked;
+var bucket_lock: sync.SpinLockIrq = .unlocked;
 
 const BucketPrivate = packed struct(u64) {
     free_count: u15,

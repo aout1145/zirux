@@ -27,30 +27,32 @@ export fn kernelEntry2(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{}
 }
 
 fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
-    // Now we enable full kernel address space!
+    // Now we enable basic kernel address space!
     arch.debug.init();
     log.info(@src(), "Booting...", .{});
     if (boot_info_ptr.magic != defs.magic) {
         return error.InvalidMagic;
     }
 
-    // Copy boot_info
-    const boot_info = boot_info_ptr.*;
+    arch.cpu.gdt.init();
 
-    try initMem(boot_info.memory_map, boot_info.uefi_system_table_base);
+    // Copy boot_info from uefi's ptr
+    var boot_info = boot_info_ptr.*;
+    try initMem(&boot_info);
 
-    try initCpu();
+    try arch.intr.init(mem.bucket.allocator);
 
     while (true) asm volatile ("hlt");
 }
 
 var init_mm: [2][mem.bootmm.requested_size]u8 align(mem.bootmm.requested_align) linksection(".init") = undefined;
 
-fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
+fn initMem(boot_info: *defs.BootInfo) !void {
     const uefi = std.os.uefi;
 
     // Initialize part of memory first
     mem.bootmm.init(&init_mm);
+    const info = &boot_info.memory_map;
     for (0..info.len) |i| {
         const desc: *uefi.tables.MemoryDescriptor = @ptrFromInt(info.base + i * info.descriptor_size);
         switch (desc.type) {
@@ -101,6 +103,8 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
             },
         }
     }
+    // Initialize per_cpu areas
+    try arch.cpu.per_cpu.init(mem.bootmm.allocator);
 
     // Construct full page table
     arch.mem.page.init();
@@ -177,15 +181,15 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
         );
         desc.virtual_start = efi_vaddr;
 
-        if (uefi_system_table_base >= desc.physical_start and
-            uefi_system_table_base < desc.physical_start + desc.number_of_pages * arch.mem.page.page_size)
+        if (boot_info.uefi_system_table_base >= desc.physical_start and
+            boot_info.uefi_system_table_base < desc.physical_start + desc.number_of_pages * arch.mem.page.page_size)
         {
-            system_table_vaddr = efi_vaddr + uefi_system_table_base - desc.physical_start;
+            system_table_vaddr = efi_vaddr + boot_info.uefi_system_table_base - desc.physical_start;
         }
 
         efi_vaddr += desc.number_of_pages * arch.mem.page.page_size;
     }
-    const system_table_phys: *std.os.uefi.tables.SystemTable = @ptrFromInt(uefi_system_table_base);
+    const system_table_phys: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
     try system_table_phys.runtime_services.setVirtualAddressMap(.{
         .ptr = @ptrFromInt(info.base),
         .info = .{
@@ -195,13 +199,14 @@ fn initMem(info: defs.MemoryMapInfo, uefi_system_table_base: usize) !void {
             .descriptor_version = info.descriptor_version,
         },
     });
+    boot_info.uefi_system_table_base = system_table_vaddr;
     // Finally, switch to new page table
     arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
 
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();
 
-    log.info(@src(), "Initailized memory.", .{});
+    // After that, we enable full memory space!
 }
 
 fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTable, attr: root.hal.page.PageAttribute) !void {
@@ -222,15 +227,3 @@ extern const __kernel_data_start: [*]const u8;
 extern const __kernel_data_end: [*]const u8;
 extern const __kernel_bss_start: [*]const u8;
 extern const __kernel_bss_end: [*]const u8;
-
-var val: u8 linksection(root.hal.cpu.per_cpu_section) = 114;
-
-fn initCpu() !void {
-    arch.cpu.gdt.initGdt();
-    try arch.cpu.per_cpu.init(root.mem.bucket.allocator);
-
-    // log.debug(@src(), "{}", .{arch.cpu.per_cpu.read(u8, &val)});
-    // arch.cpu.per_cpu.write(u8, &val, 90);
-    // arch.cpu.per_cpu.add(u8, &val, 1);
-    // log.debug(@src(), "{}", .{arch.cpu.per_cpu.read(u8, &val)});
-}

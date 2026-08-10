@@ -12,6 +12,7 @@ pub const arch = @import("arch/arch.zig");
 pub const hal = @import("hal/hal.zig");
 pub const mem = @import("mem/mem.zig");
 pub const sync = @import("sync/sync.zig");
+pub const intr = @import("intr/intr.zig");
 
 // Kernel entry
 export const _start = hal._start;

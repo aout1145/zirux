@@ -3,4 +3,4 @@ const spinlock = @import("spinlock.zig");
 
 pub const ref = refcount.ref;
 pub const unref = refcount.unref;
-pub const SpinLock = spinlock.SpinLock;
+pub const SpinLockIrq = spinlock.SpinLockIrq;

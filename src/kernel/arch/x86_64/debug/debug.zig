@@ -3,42 +3,40 @@ const root = @import("root");
 
 const serial = @import("serial.zig");
 
-const serial_port: serial.Ports = .com1;
-const serial_baud: u32 = 115200;
-var serial_available: std.atomic.Value(bool) = .init(false);
+var lock: root.sync.SpinLockIrq = .unlocked;
+var serial_com1: ?serial.Writer = null;
 
 pub fn init() void {
-    serial_available.store(serial.init(serial_port, serial_baud), .monotonic);
+    serial_com1 = serial.init(.com1, 115200, &.{});
 }
 
-pub fn print(comptime fmt: []const u8, args: anytype) void {
-    var buffer: [256]u8 = undefined;
-    const str = std.fmt.bufPrint(&buffer, fmt, args) catch blk: {
-        buffer[buffer.len - 1] = '\n';
-        buffer[buffer.len - 2] = '.';
-        buffer[buffer.len - 3] = '.';
-        buffer[buffer.len - 4] = '.';
-        break :blk &buffer;
-    };
-    // print to serial
-    if (serial_available.load(.acquire)) {
-        for (str) |byte| {
-            serial.write(byte, serial_port);
+pub fn println(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype) void {
+    const flag = lock.lock();
+    defer lock.unlock(flag);
+
+    if (serial_com1) |*writer| {
+        if (prefix) |pre| {
+            _ = writer.interface.write(pre) catch {};
         }
+        writer.prefix = prefix;
+        writer.interface.print(fmt, args) catch {};
+        writer.prefix = null;
+        writer.interface.writeByte('\n') catch {};
+        writer.interface.flush() catch {};
     }
 }
 
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    asm volatile ("cli");
+    _ = lock.lock();
 
-    print("KERNEL PANIC: {s}\n", .{msg});
+    println(null, "KERNEL PANIC: {s}", .{msg});
 
     var buffer: [256]usize = undefined;
     const trace = std.debug.captureCurrentStackTrace(.{
         .allow_unsafe_unwind = true,
     }, &buffer);
     for (trace.return_addresses, 0..) |addr, idx| {
-        print(" #{d:0>2}: 0x{X:0>16}\n", .{ idx, addr });
+        println(null, " #{d:0>2}: 0x{X:0>16}", .{ idx, addr });
     }
 
     while (true)
