@@ -17,3 +17,4 @@ pub const kernel_base: usize = 0xFFFFFFFF80000000;
 pub const kernel_size: usize = 2 * gib;
 
 pub const page = @import("page.zig");
+pub const io = @import("io.zig");

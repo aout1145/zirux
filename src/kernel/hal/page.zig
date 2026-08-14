@@ -28,6 +28,10 @@ pub const PageIndex: type = arch_mem.page.PageIndex;
 pub inline fn index2addr(page_index: PageIndex) PhysAddr {
     return @as(PhysAddr, page_index) << page_shift;
 }
+pub inline fn addr2index(addr: PhysAddr) PageIndex {
+    assert(addr % page_size == 0);
+    return @truncate(addr >> page_shift);
+}
 
 pub const PageLevel = enum {
     level5,

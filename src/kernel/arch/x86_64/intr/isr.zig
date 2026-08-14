@@ -3,9 +3,10 @@ const root = @import("root");
 const arch = root.arch.x86_64;
 const log = root.debug.log;
 
-const idt = @import("idt.zig");
+const idt = arch.intr.idt;
+const apic = arch.intr.apic;
 
-const Vector = enum(u8) {
+pub const Vector = enum(u8) {
     // Exceptions
     division_error = 0,
     debug = 1,
@@ -143,6 +144,16 @@ const Vector = enum(u8) {
         };
     }
 
+    pub inline fn isUseIst(vector: Vector) bool {
+        return switch (vector) {
+            .double_fault,
+            .non_maskable_interrupt,
+            .machine_check,
+            => true,
+            else => false,
+        };
+    }
+
     pub inline fn number(vector: Vector) u8 {
         return @intFromEnum(vector);
     }
@@ -151,14 +162,11 @@ const Vector = enum(u8) {
     }
 };
 
-pub const Isr = *const fn () callconv(.naked) void;
+const Isr = *const fn () callconv(.naked) void;
+var intr_sp: u64 linksection(arch.cpu.per_cpu.section) = 0;
 pub fn generateIsr(comptime vector: Vector) Isr {
     return struct {
         fn handler() callconv(.naked) void {
-            // Clear the interrupt flag.
-            asm volatile (
-                \\cli
-            );
             // If the interrupt does not provide an error code, push a dummy one.
             if (!vector.hasErrorCode()) {
                 asm volatile (
@@ -178,71 +186,80 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                 :
                 : [vector] "n" (vector),
             );
-            // Jump to the common ISR.
+            // Save the general-purpose registers.
             asm volatile (
-                \\jmp isrCommon
+                \\pushq %%rax
+                \\pushq %%rbx
+                \\pushq %%rcx
+                \\pushq %%rdx
+                \\pushq %%rsi
+                \\pushq %%rdi
+                \\pushq %%rbp
+                \\pushq %%r8
+                \\pushq %%r9
+                \\pushq %%r10
+                \\pushq %%r11
+                \\pushq %%r12
+                \\pushq %%r13
+                \\pushq %%r14
+                \\pushq %%r15
+            );
+            // Push the context and call the handler.
+            if (vector.isUseIst()) {
+                asm volatile (
+                    \\movq %%rsp, %%rdi
+                    // Align stack to 16 bytes.
+                    \\pushq %%rsp
+                    \\pushq (%%rsp)
+                    \\andq $-0x10, %%rsp
+                    // Call the dispatcher.
+                    \\call intrZigEntry
+                    // Restore the stack.
+                    \\movq 8(%%rsp), %%rsp
+                );
+            } else {
+                asm volatile (
+                    \\movq %%rsp, %%rdi
+                    // Switch to new stack.
+                    \\movq %%gs:(%[sp]), %%rsp
+                    \\pushq %%rdi
+                    // Call the dispatcher.
+                    \\call intrZigEntry
+                    \\popq %%rsp
+                    :
+                    : [sp] "r" (&intr_sp),
+                );
+            }
+            // Remove general-purpose registers, error code, and vector from the stack
+            asm volatile (
+                \\popq %%r15
+                \\popq %%r14
+                \\popq %%r13
+                \\popq %%r12
+                \\popq %%r11
+                \\popq %%r10
+                \\popq %%r9
+                \\popq %%r8
+                \\popq %%rbp
+                \\popq %%rdi
+                \\popq %%rsi
+                \\popq %%rdx
+                \\popq %%rcx
+                \\popq %%rbx
+                \\popq %%rax
+                \\
+                \\addq $0x10, %%rsp
+            );
+            // Swap GS if to userspace, and return
+            asm volatile (
+                \\cmpq $0x08, 0x8(%rsp)
+                \\je 1f
+                \\swapgs
+                \\1:
+                \\iretq
             );
         }
     }.handler;
-}
-export fn isrCommon() callconv(.naked) void {
-    asm volatile (
-        \\
-        // Save the general-purpose registers.
-        \\pushq %%rax
-        \\pushq %%rbx
-        \\pushq %%rcx
-        \\pushq %%rdx
-        \\pushq %%rsi
-        \\pushq %%rdi
-        \\pushq %%rbp
-        \\pushq %%r8
-        \\pushq %%r9
-        \\pushq %%r10
-        \\pushq %%r11
-        \\pushq %%r12
-        \\pushq %%r13
-        \\pushq %%r14
-        \\pushq %%r15
-
-        // Push the context and call the handler.
-        \\pushq %%rsp
-        \\popq %%rdi
-        // Align stack to 16 bytes.
-        \\pushq %%rsp
-        \\pushq (%%rsp)
-        \\andq $-0x10, %%rsp
-        // Call the dispatcher.
-        \\call intrZigEntry
-        // Restore the stack.
-        \\movq 8(%%rsp), %%rsp
-
-        // Remove general-purpose registers, error code, and vector from the stack
-        \\popq %%r15
-        \\popq %%r14
-        \\popq %%r13
-        \\popq %%r12
-        \\popq %%r11
-        \\popq %%r10
-        \\popq %%r9
-        \\popq %%r8
-        \\popq %%rbp
-        \\popq %%rdi
-        \\popq %%rsi
-        \\popq %%rdx
-        \\popq %%rcx
-        \\popq %%rbx
-        \\popq %%rax
-        \\
-        \\addq $0x10, %%rsp
-
-        // Swap GS if to userspace, and return
-        \\cmpq $0x08, 0x8(%rsp)
-        \\je 1f
-        \\swapgs
-        \\1:
-        \\iretq
-    );
 }
 export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
     const handler = arch.cpu.per_cpu.read(Handler, &handlers[ctx.vector]);
@@ -252,33 +269,42 @@ export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
 const Handler = *const fn (*arch.cpu.context.Context) void;
 var handlers: [256]Handler linksection(arch.cpu.per_cpu.section) = [_]Handler{unhandledHandler} ** 256;
 fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
-    log.err(@src(), "============ Oops! ===================", .{});
-    log.err(@src(), "Unhandled interrupt: {s} ({})", .{ Vector.fromNumber(ctx.vector).name(), ctx.vector });
-    log.err(@src(), "Error Code: 0x{X}", .{ctx.error_code});
-    if (Vector.fromNumber(ctx.vector) == .page_fault) {
-        log.err(@src(), "CR2    : 0x{X:0>16}", .{arch.@"asm".readRegister("cr2")});
-    }
-    log.err(@src(), "{f}", .{ctx});
-
-    while (true) {
-        arch.@"asm".halt();
+    switch (Vector.fromNumber(ctx.vector).type()) {
+        .abort, .fault, .reserved => {
+            log.err(@src(), "============ Oops! ===================", .{});
+            log.err(@src(), "Unhandled exception: {s} ({})", .{ Vector.fromNumber(ctx.vector).name(), ctx.vector });
+            log.err(@src(), "Error Code: 0x{X}", .{ctx.error_code});
+            if (Vector.fromNumber(ctx.vector) == .page_fault) {
+                log.err(@src(), "CR2    : 0x{X:0>16}", .{arch.@"asm".readRegister("cr2")});
+            }
+            log.err(@src(), "{f}", .{ctx});
+            @panic("Unhandled exception");
+        },
+        .trap => {
+            log.debug(@src(), "Unhandled trap: {s} ({})", .{ Vector.fromNumber(ctx.vector).name(), ctx.vector });
+            log.debug(@src(), "{f}", .{ctx});
+        },
+        .interrupt => {
+            log.debug(@src(), "Unhandled interrupt: {}", .{ctx.vector});
+            apic.sendEoi();
+        },
     }
 }
 
-pub fn init() void {
+pub fn init(gpa: std.mem.Allocator) !void {
+    const intr_stack = try gpa.alignedAlloc(
+        u8,
+        .fromByteUnits(arch.mem.page.page_size),
+        8 * arch.mem.page.page_size,
+    );
+    arch.cpu.per_cpu.write(u64, &intr_sp, @intFromPtr(intr_stack.ptr) + intr_stack.len - 8);
     inline for (0..256) |i| {
         const vector: Vector = @enumFromInt(i);
         idt.setGate(
             i,
             .interrupt64,
             @intFromPtr(generateIsr(vector)),
-            switch (vector) {
-                .double_fault,
-                .non_maskable_interrupt,
-                .machine_check,
-                => true,
-                else => false,
-            },
+            vector.isUseIst(),
         );
     }
 }

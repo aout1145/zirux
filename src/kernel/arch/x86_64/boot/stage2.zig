@@ -39,8 +39,9 @@ fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     // Copy boot_info from uefi's ptr
     var boot_info = boot_info_ptr.*;
     try initMem(&boot_info);
+    const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
 
-    try arch.intr.init(mem.bucket.allocator);
+    try arch.intr.init(mem.general_allocator, try root.drivers.acpi.fromUefiSystemTable(system_table));
 
     while (true) asm volatile ("hlt");
 }
@@ -108,7 +109,9 @@ fn initMem(boot_info: *defs.BootInfo) !void {
 
     // Construct full page table
     arch.mem.page.init();
-    const pt = try mem.page_table.PageTable.init(mem.bootmm.allocator);
+    try mem.page_table.initKernelPageTable(mem.bootmm.allocator);
+    var lock_flag: u8 = undefined;
+    const pt = mem.page_table.getKernelPageTable(&lock_flag);
     // 1. Kernel area
     try mapKernel(@intFromPtr(&__kernel_per_cpu_start), @intFromPtr(&__kernel_per_cpu_end), pt, .{
         .writable = false,
@@ -202,6 +205,7 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     boot_info.uefi_system_table_base = system_table_vaddr;
     // Finally, switch to new page table
     arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
+    mem.page_table.releaseKernelPageTable(lock_flag);
 
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();
@@ -209,7 +213,7 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     // After that, we enable full memory space!
 }
 
-fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTable, attr: root.hal.page.PageAttribute) !void {
+fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTablePtr, attr: root.hal.page.PageAttribute) !void {
     const phys_addr = start - arch.mem.kernel_base;
     const virt_addr = arch.mem.kernel_base + phys_addr;
     const page_num = (end - start) / arch.mem.page.page_size;

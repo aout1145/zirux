@@ -202,20 +202,20 @@ const DebugMeta = packed struct(usize) {
 fn allocFunc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
     if (is_debug) {
         assert(hal_page.page_size >= alignment.toByteUnits());
-        if (len <= hal_page.page_size) {
+        const ptr: [*]u8 = if (len <= hal_page.page_size) blk: {
             const bucket_index = bucketIndex(len).?;
             assert(bucket_sizes[bucket_index] >= alignment.toByteUnits());
             const meta: *DebugMeta = @ptrCast(@alignCast(alloc(bucket_index + 1) orelse return null));
             meta.* = .{ .len = @intCast(len) };
-            return @ptrFromInt(@intFromPtr(meta) + bucket_sizes[bucket_index]);
-        } else if (buddy.alloc(order(len) + 1, .bucket)) |page_index| {
+            break :blk @ptrFromInt(@intFromPtr(meta) + bucket_sizes[bucket_index]);
+        } else if (buddy.alloc(order(len) + 1, .bucket)) |page_index| blk: {
             const meta_vaddr = hal_page.direct_map_base + hal_page.index2addr(page_index);
             const meta: *DebugMeta = @ptrFromInt(meta_vaddr);
             meta.* = .{ .len = @intCast(len) };
-            return @ptrFromInt(meta_vaddr + buddy.orderSize(order(len)) * hal_page.page_size);
-        } else {
-            return null;
-        }
+            break :blk @ptrFromInt(meta_vaddr + buddy.orderSize(order(len)) * hal_page.page_size);
+        } else return null;
+        @memset(ptr[0..len], 0xAA);
+        return ptr;
     } else {
         if (bucketIndex(len)) |bucket_index| {
             return alloc(bucket_index);
@@ -230,6 +230,7 @@ fn allocFunc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) 
 fn freeFunc(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, _: usize) void {
     if (is_debug) {
         assert(hal_page.page_size >= alignment.toByteUnits());
+        @memset(memory, 0xFE);
         if (memory.len <= hal_page.page_size) {
             const bucket_index = bucketIndex(memory.len).?;
             assert(bucket_sizes[bucket_index] >= alignment.toByteUnits());

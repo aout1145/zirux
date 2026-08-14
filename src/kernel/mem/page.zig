@@ -10,6 +10,7 @@ pub const PageType = enum(u8) {
     tail = 1,
     buddy,
     bucket,
+    vmap,
 };
 pub const PageList = packed struct(u128) {
     _has_next: bool,

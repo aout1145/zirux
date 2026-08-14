@@ -40,7 +40,7 @@ pub fn setGate(
     index: usize,
     gate_type: GateType,
     offset: u64,
-    use_isr: bool,
+    use_ist: bool,
 ) void {
     const local_gate = arch.cpu.per_cpu.ptr(GateDescriptor, &idt[index]);
     local_gate.* = .{
@@ -50,7 +50,7 @@ pub fn setGate(
         .gate_type = gate_type,
         .offset_high = @truncate(offset >> 16),
         .dpl = 0,
-        .ist = if (use_isr) 1 else 0,
+        .ist = if (use_ist) 1 else 0,
     };
 }
 

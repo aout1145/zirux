@@ -27,7 +27,7 @@ pub fn println(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype) voi
 }
 
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
-    _ = lock.lock();
+    asm volatile ("cli");
 
     println(null, "KERNEL PANIC: {s}", .{msg});
 

@@ -108,7 +108,7 @@ pub fn switchToBuddy() void {
 }
 
 /// Map all memory into direct mapping area
-pub fn makeDirectMap(page_table: mem.page_table.PageTable) !void {
+pub fn makeDirectMap(page_table: mem.page_table.PageTablePtr) !void {
     var base: hal_page.PhysAddr = memory[0].base();
     var len: usize = 0;
 
@@ -160,7 +160,7 @@ pub fn makeDirectMap(page_table: mem.page_table.PageTable) !void {
 }
 
 /// Create and map page metadata area
-pub fn makePageMetadata(page_table: mem.page_table.PageTable) !void {
+pub fn makePageMetadata(page_table: mem.page_table.PageTablePtr) !void {
     var max_paddr: hal_page.PhysAddr = 0;
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable and region.type != .no_alloc) continue;
@@ -197,11 +197,11 @@ pub fn makePageMetadata(page_table: mem.page_table.PageTable) !void {
         },
     );
 
-    log.debug(
-        @src(),
-        "Page metadata: 0x{x} - 0x{x} ({Bi})",
-        .{ hal_page.page_meta_base, hal_page.page_meta_base + metadata_size, metadata_size },
-    );
+    // log.debug(
+    //     @src(),
+    //     "Page metadata: 0x{x} - 0x{x} ({Bi})",
+    //     .{ hal_page.page_meta_base, hal_page.page_meta_base + metadata_size, metadata_size },
+    // );
 }
 
 fn update(array: *[]Region, count: *usize, base: hal_page.PhysAddr, len: usize, @"type": RegionType) Allocator.Error!void {

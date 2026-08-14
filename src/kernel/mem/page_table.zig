@@ -3,6 +3,20 @@ const root = @import("root");
 const assert = std.debug.assert;
 const log = root.debug.log;
 
+var kernel_page_table_lock: root.sync.SpinLockIrq = .unlocked;
+var kernel_page_table: ?PageTablePtr = null;
+
+pub inline fn initKernelPageTable(gpa: std.mem.Allocator) !void {
+    kernel_page_table = try .init(gpa);
+}
+pub inline fn getKernelPageTable(lock_flag: *u8) PageTablePtr {
+    lock_flag.* = kernel_page_table_lock.lock();
+    return kernel_page_table.?;
+}
+pub inline fn releaseKernelPageTable(lock_flag: u8) void {
+    kernel_page_table_lock.unlock(lock_flag);
+}
+
 pub const PagingError = error{
     OutOfMemory,
     NotCanonical,
@@ -10,7 +24,7 @@ pub const PagingError = error{
     NotMapped,
 };
 
-pub const PageTable = struct {
+pub const PageTablePtr = struct {
     const page = root.hal.page;
     const VirtAddr = page.VirtAddr;
     const PhysAddr = page.PhysAddr;
@@ -24,6 +38,7 @@ pub const PageTable = struct {
     const PageLevel = page.PageLevel;
     const fromHardware = page.fromHardwarePTE;
     const toHardware = page.toHardwarePTE;
+    const flushTLB = page.flushTLB;
 
     comptime {
         assert(entries_num * @sizeOf(PTE) == page_size);
@@ -31,14 +46,14 @@ pub const PageTable = struct {
 
     global_table: *align(page_size) [entries_num]PTE,
 
-    pub fn init(gpa: Allocator) PagingError!PageTable {
+    pub fn init(gpa: Allocator) PagingError!PageTablePtr {
         return .{
             .global_table = try allocatePage(gpa),
         };
     }
 
     pub fn map(
-        self: PageTable,
+        self: PageTablePtr,
         gpa: Allocator,
         level: PageLevel,
         virt_addr: VirtAddr,
@@ -83,10 +98,11 @@ pub const PageTable = struct {
             .type = .page,
             .attribute = attr,
         });
+        flushTLB(virt_addr);
     }
 
     pub fn mapRange(
-        self: PageTable,
+        self: PageTablePtr,
         gpa: Allocator,
         virt_addr: VirtAddr,
         phys_addr: PhysAddr,
@@ -122,7 +138,7 @@ pub const PageTable = struct {
         level: PageLevel,
         entry: PageTableEntry,
     };
-    pub fn query(self: PageTable, virt_addr: VirtAddr) ?QueryResult {
+    pub fn query(self: PageTablePtr, virt_addr: VirtAddr) ?QueryResult {
         var current_table: *align(page_size) [entries_num]PTE = self.global_table;
         var current_level: PageLevel = global_level;
         while (true) : (current_level = current_level.lower()) {

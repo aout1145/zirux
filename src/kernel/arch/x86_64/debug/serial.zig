@@ -1,6 +1,8 @@
 const std = @import("std");
 const root = @import("root");
-const @"asm" = root.arch.x86_64.@"asm";
+const arch = root.arch.x86_64;
+const io = arch.mem.io;
+const @"asm" = arch.@"asm";
 
 pub const Port = enum(u16) {
     com1 = 0x3F8,
@@ -44,26 +46,26 @@ const offsets = struct {
 pub fn init(port: Port, baud: u32, buffer: []u8) ?Writer {
     const p = @intFromEnum(port);
 
-    @"asm".outb(0, p + offsets.ier); // Disable interrupts
-    @"asm".outb(0, p + offsets.fcr); // Disable FIFO
+    io.outb(0, p + offsets.ier); // Disable interrupts
+    io.outb(0, p + offsets.fcr); // Disable FIFO
 
     const divisor = 115200 / baud;
-    const c = @"asm".inb(p + offsets.lcr);
-    @"asm".outb(c | 0b1000_0000, p + offsets.lcr); // Enable DLAB
-    @"asm".outb(@truncate(divisor), p + offsets.dll);
-    @"asm".outb(@truncate(divisor >> 8), p + offsets.dlh);
+    const c = io.inb(p + offsets.lcr);
+    io.outb(c | 0b1000_0000, p + offsets.lcr); // Enable DLAB
+    io.outb(@truncate(divisor), p + offsets.dll);
+    io.outb(@truncate(divisor >> 8), p + offsets.dlh);
 
     // Disable DLAB
     // 8n1: no parity, 1 stop bit, 8 data bit
-    @"asm".outb(0b00_000_0_11, p + offsets.lcr);
+    io.outb(0b00_000_0_11, p + offsets.lcr);
 
     // Set in loopback mode, test the serial chip
-    @"asm".outb(0b00011111, p + offsets.mcr);
-    @"asm".outb(0xAE, p);
-    if (@"asm".inb(p) != 0xAE) {
+    io.outb(0b00011111, p + offsets.mcr);
+    io.outb(0xAE, p);
+    if (io.inb(p) != 0xAE) {
         return null;
     }
-    @"asm".outb(0b00001111, p + offsets.mcr);
+    io.outb(0b00001111, p + offsets.mcr);
 
     return .{
         .port = port,
@@ -78,11 +80,11 @@ pub fn init(port: Port, baud: u32, buffer: []u8) ?Writer {
 fn write(byte: u8, port: Port) void {
     const p = @intFromEnum(port);
     // Wait until the transmitter holding buffer is empty
-    while ((@"asm".inb(p + offsets.lsr) & 0b0010_0000) == 0) {
+    while ((io.inb(p + offsets.lsr) & 0b0010_0000) == 0) {
         @"asm".pause();
     }
     // Put char into the transmitter holding buffer
-    @"asm".outb(byte, p);
+    io.outb(byte, p);
 }
 
 pub const Writer = struct {

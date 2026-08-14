@@ -3,15 +3,19 @@ const root = @import("root");
 const arch = root.arch.x86_64;
 const assert = std.debug.assert;
 const log = root.debug.log;
+const acpi = root.drivers.acpi;
 
-const idt = @import("idt.zig");
-const isr = @import("isr.zig");
+pub const idt = @import("idt.zig");
+pub const isr = @import("isr.zig");
+pub const apic = @import("apic.zig");
+pub const apic_timer = @import("apic_timer.zig");
 
-pub fn init(gpa: std.mem.Allocator) !void {
-    _ = gpa;
+pub fn init(gpa: std.mem.Allocator, xsdt: *acpi.XSDT) !void {
     idt.init();
-    isr.init();
+    try isr.init(gpa);
     asm volatile ("sti");
+    try apic.init(xsdt);
+    try apic_timer.init();
 }
 
 var preempt_count: u32 linksection(arch.cpu.per_cpu.section) = 1;
