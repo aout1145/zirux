@@ -2,45 +2,57 @@ const std = @import("std");
 const root = @import("root");
 const assert = std.debug.assert;
 const log = root.debug.log;
-const cpu = @import("cpu.zig");
+const arch = root.arch.x86_64;
+const per_cpu = arch.cpu.per_cpu;
 
 pub fn init() void {
-    gdtr.base = @intFromPtr(&gdt);
-    gdt[kernel_cs_index] = SegmentDescriptor.init(
+    // Refresh %gs will clear GS.Base, so we save it first.
+    const gs_base = arch.@"asm".registers.GsBase.read();
+
+    const local_gdtr = per_cpu.ptr(GdtRegister, &gdtr);
+    const local_gdt = per_cpu.ptr([max_num_gdt]SegmentDescriptor, &gdt);
+    const local_tss = per_cpu.ptr(TaskStateSegment, &tss);
+
+    local_gdtr.base = @intFromPtr(local_gdt);
+    local_gdt[kernel_cs_index] = SegmentDescriptor.init(
         0,
         std.math.maxInt(u20),
         0x9A,
         0xA,
     );
-    gdt[kernel_ds_index] = SegmentDescriptor.init(
+    local_gdt[kernel_ds_index] = SegmentDescriptor.init(
         0,
         std.math.maxInt(u20),
         0x92,
         0xC,
     );
-    gdt[user_ds_index] = SegmentDescriptor.init(
+    local_gdt[user_ds_index] = SegmentDescriptor.init(
         0,
         std.math.maxInt(u20),
         0xF2,
         0xC,
     );
-    gdt[user_cs_index] = SegmentDescriptor.init(
+    local_gdt[user_cs_index] = SegmentDescriptor.init(
         0,
         std.math.maxInt(u20),
         0xFA,
         0xA,
     );
-    const tss_ptr: *LongSegmentDescriptor = @ptrCast(@alignCast(&gdt[tss_index]));
+    // log.debug(@src(), "{x}", .{@intFromPtr(&local_gdt[tss_index])});
+    const tss_ptr: *align(8) LongSegmentDescriptor = @ptrCast(@alignCast(&local_gdt[tss_index]));
     tss_ptr.* = LongSegmentDescriptor.init(
-        @intFromPtr(&tss),
+        @intFromPtr(local_tss),
         @sizeOf(TaskStateSegment) - 1,
         0x89,
         0x0,
     );
-    lgdt(@intFromPtr(&gdtr));
+    lgdt(@intFromPtr(local_gdtr));
     loadDs(kernel_ds_selector);
     loadCs(kernel_cs_selector);
     loadTss(0, tss_index);
+
+    // Restore GS.Base
+    arch.@"asm".registers.GsBase.write(gs_base);
 }
 
 const SegmentDescriptor = packed struct(u64) {
@@ -112,10 +124,10 @@ comptime {
     assert(kernel_ds == kernel_cs + 8);
     assert(user_cs == user_ds + 8);
 }
-var gdt: [max_num_gdt]SegmentDescriptor align(16) = [_]SegmentDescriptor{
+var gdt: [max_num_gdt]SegmentDescriptor align(16) linksection(arch.cpu.per_cpu.section) = [_]SegmentDescriptor{
     SegmentDescriptor.initNull(),
 } ** max_num_gdt;
-var gdtr: GdtRegister = .{
+var gdtr: GdtRegister linksection(arch.cpu.per_cpu.section) = .{
     .limit = @sizeOf(@TypeOf(gdt)) - 1,
     .base = undefined,
 };
@@ -198,7 +210,7 @@ const LongSegmentDescriptor = packed struct(u128) {
     }
 };
 pub const tss_index = 0x05;
-pub var tss: TaskStateSegment = std.mem.zeroes(TaskStateSegment);
+pub var tss: TaskStateSegment linksection(arch.cpu.per_cpu.section) = std.mem.zeroes(TaskStateSegment);
 fn loadTss(comptime rpl: u2, comptime index: u13) void {
     asm volatile (
         \\mov %[kernel_tss], %%di

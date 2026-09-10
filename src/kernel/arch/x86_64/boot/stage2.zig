@@ -7,7 +7,7 @@ const assert = std.debug.assert;
 
 const defs = @import("defs.zig");
 
-var kernel_stack: [4 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
+var kernel_stack: [2 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
 
 pub fn _start(_: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
     // Switch to stack in high address
@@ -28,22 +28,30 @@ export fn kernelEntry2(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{}
 
 fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     // Now we enable basic kernel address space!
+    arch.cpu.init();
     arch.debug.init();
     log.info(@src(), "Booting...", .{});
     if (boot_info_ptr.magic != defs.magic) {
         return error.InvalidMagic;
     }
 
-    arch.cpu.gdt.init();
-
     // Copy boot_info from uefi's ptr
     var boot_info = boot_info_ptr.*;
     try initMem(&boot_info);
     const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
+    try root.drivers.acpi.initFromUefiSystemTable(system_table);
 
-    try arch.intr.init(mem.general_allocator, try root.drivers.acpi.fromUefiSystemTable(system_table));
+    // Initialize interrupt
+    try arch.intr.init();
 
-    while (true) asm volatile ("hlt");
+    log.info(@src(), "Initialized successfully.", .{});
+
+    // Initialize other cpus
+    try arch.cpu.smp.init();
+
+    root.kernelMain();
+
+    unreachable;
 }
 
 var init_mm: [2][mem.bootmm.requested_size]u8 align(mem.bootmm.requested_align) linksection(".init") = undefined;
@@ -104,8 +112,15 @@ fn initMem(boot_info: *defs.BootInfo) !void {
             },
         }
     }
-    // Initialize per_cpu areas
-    try arch.cpu.per_cpu.init(mem.bootmm.allocator);
+    // Reserve memory under 1mb for compatibility
+    // TODO：improve algorithm to support:
+    //       try mem.bootmm.reserve(0, 1 * mem.mib);
+    for (0..mem.mib / arch.mem.page.page_size) |i| {
+        try mem.bootmm.reserve(i * arch.mem.page.page_size, arch.mem.page.page_size);
+    }
+    // Initialize per_cpu areas and GDT
+    arch.cpu.per_cpu.init(try arch.cpu.per_cpu.allocate(mem.bootmm.allocator));
+    arch.cpu.gdt.init();
 
     // Construct full page table
     arch.mem.page.init();
@@ -113,6 +128,13 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     var lock_flag: u8 = undefined;
     const pt = mem.page_table.getKernelPageTable(&lock_flag);
     // 1. Kernel area
+    try mapKernel(@intFromPtr(&__kernel_boot_trampoline_start), @intFromPtr(&__kernel_boot_trampoline_end), pt, .{
+        .writable = false,
+        .executable = false,
+        .userspace = false,
+        .global = true,
+        .cache_policy = .write_back,
+    });
     try mapKernel(@intFromPtr(&__kernel_per_cpu_start), @intFromPtr(&__kernel_per_cpu_end), pt, .{
         .writable = false,
         .executable = false,
@@ -220,7 +242,8 @@ fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTablePtr, attr: root.h
     try mem.bootmm.reserve(phys_addr, end - start);
     try pt.mapRange(mem.bootmm.allocator, virt_addr, phys_addr, page_num, attr);
 }
-
+extern const __kernel_boot_trampoline_start: [*]const u8;
+extern const __kernel_boot_trampoline_end: [*]const u8;
 extern const __kernel_per_cpu_start: [*]const u8;
 extern const __kernel_per_cpu_end: [*]const u8;
 extern const __kernel_text_start: [*]const u8;

@@ -4,14 +4,12 @@ const arch = root.arch.x86_64;
 const assert = std.debug.assert;
 const log = root.debug.log;
 const acpi = root.drivers.acpi;
-const apic = arch.intr.apic;
-const isr = arch.intr.isr;
+const intr = arch.intr;
 const @"asm" = arch.@"asm";
 const io = arch.mem.io;
 
-pub const timer_divide: TimerDivide = .div16;
-pub const timer_hz: u32 = 250;
-pub const tick_ms: u32 = 1000 / timer_hz;
+const timer_divide: TimerDivide = .div16;
+const timer_irq = intr.isr.Vector.timer.number();
 
 /// See also: https://wiki.osdev.org/APIC_Timer#APIC_Timer_Modes
 pub const TimerMode = enum(u2) {
@@ -52,8 +50,8 @@ const LvtTimerRegister = packed struct(u32) {
 };
 
 pub fn init() !void {
-    asm volatile ("cli");
-    defer asm volatile ("sti");
+    const flag = intr.irqSave();
+    defer intr.irqRestore(flag);
 
     const wait_us = 10_000; // 10ms
     const bus_hz = try pit.calibrate(wait_us);
@@ -68,18 +66,24 @@ pub fn init() !void {
         .div128 => 128,
         .div1 => 1,
     };
-    const init_count = bus_hz / divisor / timer_hz;
+    const init_count = bus_hz / divisor / root.time.tick.tick_ms;
     if (init_count == 0 or init_count > 0xFFFFFFFF) {
         return error.InvalidTimerFrequency;
     }
 
+    intr.isr.setHandler(timer_irq, timerHandler);
     setTimerDivide(timer_divide);
-    configureLvtTimer(isr.Vector.timer.number(), .periodic, false);
+    configureLvtTimer(timer_irq, .periodic, false);
     setInitialCount(@intCast(init_count));
 }
 
+fn timerHandler(ctx: *arch.cpu.context.Context) void {
+    root.time.tick.handler(@ptrCast(ctx));
+    intr.apic.sendEoi();
+}
+
 fn setTimerDivide(divide: TimerDivide) void {
-    apic.lapicWrite(.divide_conf, @intFromEnum(divide));
+    intr.apic.lapicWrite(.divide_conf, @intFromEnum(divide));
 }
 
 fn configureLvtTimer(vector: u8, mode: TimerMode, masked: bool) void {
@@ -88,15 +92,15 @@ fn configureLvtTimer(vector: u8, mode: TimerMode, masked: bool) void {
         .timer_mode = mode,
         .masked = masked,
     });
-    apic.lapicWrite(.lvt_timer, @bitCast(lvt));
+    intr.apic.lapicWrite(.lvt_timer, @bitCast(lvt));
 }
 
 fn setInitialCount(count: u32) void {
-    apic.lapicWrite(.initial_cnt, count);
+    intr.apic.lapicWrite(.initial_cnt, count);
 }
 
 fn getCurrentCount() u32 {
-    return apic.lapicRead(.current_cnt);
+    return intr.apic.lapicRead(.current_cnt);
 }
 
 const pit = struct {

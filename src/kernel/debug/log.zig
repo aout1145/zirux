@@ -9,7 +9,13 @@ inline fn log(
     comptime fmt: []const u8,
     args: anytype,
 ) void {
-    println(std.fmt.comptimePrint("{s} {s}:{} ", .{ level, src.file, src.line }), fmt, args);
+    var buffer: [128]u8 = undefined;
+    const prefix = std.fmt.bufPrint(
+        &buffer,
+        "[CPU#{}] {s} {s}:{} ",
+        .{ root.hal.cpu.getLocalCpuId(), level, src.file, src.line },
+    ) catch unreachable;
+    println(prefix, fmt, args);
 }
 pub inline fn debug(comptime src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
     if (@import("builtin").mode == .Debug) {

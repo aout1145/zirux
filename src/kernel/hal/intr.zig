@@ -23,6 +23,8 @@ pub const Exception = union(ExceptionType) {
     };
 };
 
+pub const IrqNumber = u32;
+pub inline fn getIrq() IrqNumber {}
 /// Disable interrupt and save flags
 pub inline fn irqSave() u8 {
     return arch.intr.irqSave();

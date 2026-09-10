@@ -24,6 +24,8 @@ pub fn init() void {
     var cr4 = @"asm".readCtrlRegister(registers.Cr4, "cr4");
     cr4.smep = true;
     cr4.smap = true;
+    cr4.pse = true;
+    cr4.pge = true;
     @"asm".writeCtrlRegister("cr4", cr4);
 }
 

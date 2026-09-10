@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = true,
     });
+    exe_kernel.root_module.addAssemblyFile(b.path("src/kernel/arch/x86_64/boot/trampoline.S"));
     exe_kernel.setLinkerScript(b.path("src/kernel/arch/x86_64/linker.lds"));
     b.installArtifact(exe_kernel);
 
@@ -77,6 +78,8 @@ pub fn build(b: *std.Build) void {
         "-enable-kvm",
         "-cpu",
         "host",
+        "-smp",
+        "8",
         "-s",
         // "-S",
     };

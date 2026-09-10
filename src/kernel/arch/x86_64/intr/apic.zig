@@ -7,9 +7,9 @@ const acpi = root.drivers.acpi;
 const hal = root.hal;
 const mem = root.mem;
 
-pub fn init(xsdt: *acpi.XSDT) !void {
-    const madt = xsdt.find(acpi.tables.MADT, "APIC") orelse return error.NotFound;
-    const vaddr = try mem.vmap.ioMap(madt.lapic_address, hal.page.page_size, .uncacheable);
+pub fn init() !void {
+    const madt = acpi.xsdt.?.find(acpi.tables.MADT, "APIC") orelse return error.NotFound;
+    const vaddr = try mem.vmap.ioMap(madt.lapic_addr, hal.page.page_size, .uncacheable);
     arch.cpu.per_cpu.write(*hal.io.IoMem, &lapic_base, vaddr);
 
     var svr: SpuriousVectorRegister = @bitCast(lapicRead(.svr));
@@ -40,13 +40,16 @@ pub const LocalApicRegisters = enum(u32) {
     current_cnt = 0x390,
     /// Divide Configuration Register (for Timer)
     divide_conf = 0x3E0,
+    /// Interrupt Command Register
+    icr_low = 0x300,
+    icr_high = 0x310,
     // TODO: Add more
 };
-pub fn lapicRead(reg: LocalApicRegisters) u32 {
+pub inline fn lapicRead(reg: LocalApicRegisters) u32 {
     const base = arch.cpu.per_cpu.read(*hal.io.IoMem, &lapic_base);
     return base.read(u32, @intFromEnum(reg));
 }
-pub fn lapicWrite(reg: LocalApicRegisters, value: u32) void {
+pub inline fn lapicWrite(reg: LocalApicRegisters, value: u32) void {
     const base = arch.cpu.per_cpu.read(*hal.io.IoMem, &lapic_base);
     base.write(u32, @intFromEnum(reg), value);
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root");
 const arch = root.arch.x86_64;
 const log = root.debug.log;
+const assert = std.debug.assert;
 
 const idt = arch.intr.idt;
 const apic = arch.intr.apic;
@@ -206,6 +207,7 @@ pub fn generateIsr(comptime vector: Vector) Isr {
             );
             // Push the context and call the handler.
             if (vector.isUseIst()) {
+                // Use IST: no need to switch intr_stack (hardware has done it)
                 asm volatile (
                     \\movq %%rsp, %%rdi
                     // Align stack to 16 bytes.
@@ -217,7 +219,8 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                     // Restore the stack.
                     \\movq 8(%%rsp), %%rsp
                 );
-            } else {
+            } else if (vector.type() == .interrupt) {
+                // Hard interrupt: switch to intr_stack (mannually)
                 asm volatile (
                     \\movq %%rsp, %%rdi
                     // Switch to new stack.
@@ -229,39 +232,63 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                     :
                     : [sp] "r" (&intr_sp),
                 );
+            } else {
+                // Exception: use the kernel stack of process
+                // More: enable interrupt
+                asm volatile (
+                    \\movq %%rsp, %%rdi
+                    // Align stack to 16 bytes.
+                    \\pushq %%rsp
+                    \\pushq (%%rsp)
+                    \\andq $-0x10, %%rsp
+                    // Call the dispatcher.
+                    \\sti
+                    \\call intrZigEntry
+                    \\cli
+                    // Restore the stack.
+                    \\movq 8(%%rsp), %%rsp
+                );
             }
-            // Remove general-purpose registers, error code, and vector from the stack
             asm volatile (
-                \\popq %%r15
-                \\popq %%r14
-                \\popq %%r13
-                \\popq %%r12
-                \\popq %%r11
-                \\popq %%r10
-                \\popq %%r9
-                \\popq %%r8
-                \\popq %%rbp
-                \\popq %%rdi
-                \\popq %%rsi
-                \\popq %%rdx
-                \\popq %%rcx
-                \\popq %%rbx
-                \\popq %%rax
-                \\
-                \\addq $0x10, %%rsp
-            );
-            // Swap GS if to userspace, and return
-            asm volatile (
-                \\cmpq $0x08, 0x8(%rsp)
-                \\je 1f
-                \\swapgs
-                \\1:
-                \\iretq
+                \\jmp isrCommon
             );
         }
     }.handler;
 }
+export fn isrCommon() callconv(.naked) void {
+    // Remove general-purpose registers, error code, and vector from the stack
+    asm volatile (
+        \\popq %%r15
+        \\popq %%r14
+        \\popq %%r13
+        \\popq %%r12
+        \\popq %%r11
+        \\popq %%r10
+        \\popq %%r9
+        \\popq %%r8
+        \\popq %%rbp
+        \\popq %%rdi
+        \\popq %%rsi
+        \\popq %%rdx
+        \\popq %%rcx
+        \\popq %%rbx
+        \\popq %%rax
+        \\
+        \\addq $0x10, %%rsp
+    );
+    // Swap GS if to userspace, and return
+    asm volatile (
+        \\cmpq $0x08, 0x8(%rsp)
+        \\je 1f
+        \\swapgs
+        \\1:
+        \\iretq
+    );
+}
 export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
+    // When vector >= 128, pushq will expanded it into 0xFFFFFFFFFFFFFF__,
+    // So we &= 0xFF to solve it.
+    ctx.vector &= 0xFF;
     const handler = arch.cpu.per_cpu.read(Handler, &handlers[ctx.vector]);
     handler(ctx);
 }
@@ -289,6 +316,14 @@ fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
             apic.sendEoi();
         },
     }
+}
+pub fn setHandler(vector: u8, handler: Handler) void {
+    const flag = arch.intr.irqSave();
+    defer arch.intr.irqRestore(flag);
+
+    const local_handers = arch.cpu.per_cpu.ptr([256]Handler, &handlers);
+    assert(local_handers[vector] == unhandledHandler);
+    local_handers[vector] = handler;
 }
 
 pub fn init(gpa: std.mem.Allocator) !void {

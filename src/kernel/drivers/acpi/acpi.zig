@@ -2,16 +2,18 @@ const std = @import("std");
 const root = @import("root");
 const assert = std.debug.assert;
 
-pub fn fromUefiSystemTable(system_table: *std.os.uefi.tables.SystemTable) !*XSDT {
+pub var xsdt: ?*XSDT = null;
+
+pub fn initFromUefiSystemTable(system_table: *std.os.uefi.tables.SystemTable) !void {
     const uefi = std.os.uefi;
     const config_table =
         system_table.configuration_table[0..system_table.number_of_table_entries];
     for (config_table) |entry| {
         if (entry.vendor_guid.eql(uefi.tables.ConfigurationTable.acpi_20_table_guid)) {
             const xsdp = try XSDP.parse(@intFromPtr(entry.vendor_table));
-            const xsdt: *XSDT = @ptrFromInt(root.hal.page.direct_map_base + xsdp.xsdt_address);
-            if (xsdt.header.check("XSDT")) {
-                return xsdt;
+            xsdt = @ptrFromInt(root.hal.page.direct_map_base + xsdp.xsdt_address);
+            if (xsdt.?.header.check("XSDT")) {
+                return;
             }
         }
     }
@@ -116,15 +118,15 @@ pub const XSDT = extern struct {
             }
         }
     };
-    pub inline fn iter(xsdt: *const XSDT) Iterator {
+    pub inline fn iter(self: *const XSDT) Iterator {
         return .{
-            .xsdt = xsdt,
+            .xsdt = self,
             .index = 0,
         };
     }
-    pub fn find(xsdt: *XSDT, T: type, signiture: []const u8) ?*T {
+    pub fn find(self: *XSDT, T: type, signiture: []const u8) ?*T {
         assert(@alignOf(T) == 1);
-        var it = xsdt.iter();
+        var it = self.iter();
         while (it.next()) |sdth| {
             if (sdth.check(signiture)) {
                 return @ptrCast(sdth);

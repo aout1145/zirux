@@ -1,0 +1,176 @@
+# AP Trampoline – 实模式 → 长模式（1GB 大页恒等映射 + 直接映射 + 内核映射）
+# 物理布局（硬编码，无外部符号）：
+#   0x8000 ~ 0x8FEF  : 代码 + GDT
+#   0x8FF0           : ap_entry（8 字节，BSP 填充入口地址）
+#   0x9000 ~ 0x9FFF  : PML4 页表（两个有效条目：0 和 511）
+#   0xA000 ~ 0xAFFF  : PDPT 页表（512 个条目，映射 0～512 GB 物理内存）
+
+.section .boot_trampoline, "ax"
+
+.balign 4096
+.code16
+.global ap_trampoline_start
+ap_trampoline_start:
+    cli
+    cld
+
+    # 实模式段寄存器清零
+    xorw    %ax, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %ss
+    movw    %ax, %fs
+    movw    %ax, %gs
+
+    # 加载临时 GDT（指向保护模式段描述符）
+    lgdt    gdt_ptr_16
+
+    # 开启保护模式 (CR0.PE = 1)
+    movl    %cr0, %eax
+    orl     $1, %eax
+    movl    %eax, %cr0
+
+    # 远跳转到 32-bit 保护模式代码段
+    ljmpl   $0x08, $prot_mode_entry
+
+.balign 16
+.code32
+prot_mode_entry:
+    # 初始化数据段寄存器
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %ss
+    movw    %ax, %fs
+    movw    %ax, %gs
+
+    # ----- 进入长模式 -----
+    # 1. 启用 PAE
+    movl    %cr4, %eax
+    orl     $(1 << 5), %eax
+    movl    %eax, %cr4
+
+    # 2. 加载 CR3 -> PML4 表 (物理 0x9000)
+    movl    $0x9000, %eax
+    movl    %eax, %cr3
+
+    # 3. 设置 IA32_EFER.LME = 1
+    movl    $0xC0000080, %ecx
+    rdmsr
+    orl     $(1 << 8), %eax
+    wrmsr
+
+    # 4. 启用分页 (CR0.PG = 1)
+    movl    %cr0, %eax
+    orl     $(1 << 31), %eax
+    movl    %eax, %cr0
+
+    # 5. 加载 64-bit GDT
+    lgdt    gdt_ptr_64
+
+    # 6. 远跳转到 64-bit 代码段
+    ljmp    $0x08, $long_mode_entry
+
+.balign 16
+.code64
+long_mode_entry:
+    # 初始化 64-bit 数据段寄存器
+    movw    $0x10, %ax
+    movw    %ax, %ds
+    movw    %ax, %es
+    movw    %ax, %ss
+    movw    %ax, %fs
+    movw    %ax, %gs
+
+    # 设置栈指针
+    movq    ap_stack, %rsp
+
+    # 重置 RFLAGS
+    pushq   $0x2
+    popfq
+
+    # 跳转到入口函数
+    movq    ap_entry, %rax
+    call    *%rax
+
+halt:
+    cli
+    hlt
+    jmp     halt
+
+# ========== GDT 描述符 ==========
+
+.balign 16
+gdt_ptr_16:
+    .word   gdt_16_end - gdt_16 - 1
+    .long   gdt_16
+
+.balign 16
+gdt_16:
+    .quad   0x0000000000000000          # NULL
+    .quad   0x00CF9A000000FFFF          # 32-bit 代码段
+    .quad   0x00CF92000000FFFF          # 32-bit 数据段
+gdt_16_end:
+
+.balign 16
+gdt_ptr_64:
+    .word   gdt_64_end - gdt_64 - 1
+    .long   gdt_64
+
+.balign 16
+gdt_64:
+    .quad   0x0000000000000000          # NULL
+    .quad   0x00AF9A0000000000          # 64-bit 代码段 (L=1)
+    .quad   0x00CF920000000000          # 64-bit 数据段
+gdt_64_end:
+
+# ========== BSP 将写入的变量 ==========
+
+.org 0x0FF0                     # 物理地址 0x8FF0
+.global ap_stack
+ap_stack:
+    .quad   0                     # BSP 将写入 AP 的栈指针
+.global ap_entry
+ap_entry:
+    .quad   0                     # BSP 将写入 AP 的入口地址
+
+# ========== PML4 页表 (物理 0x9000) ==========
+
+.org 0x1000                     # 物理地址 0x9000
+.balign 4096
+pml4_table:
+    # 条目 0：低 512GB 恒等映射，指向 PDPT (0xA000)
+    .quad   0xA003
+
+    # 跳过条目 1 ~ 271
+    .skip   (272*8 - 8)
+
+    # 条目 272：0xFFFF880000000000 起的 512GB 直接映射，指向同一个 PDPT
+    .quad   0xA003
+
+    # 跳过条目 273 ~ 510
+    .skip   (511*8 - 273*8)
+
+    # 条目 511：0xFFFFFFFF80000000 起的 1GB 内核映射，指向内核 PDPT (0xB000)
+    .quad   0xB003
+
+# ========== PDPT 页表 (物理 0xA000) ==========
+
+# 映射 0xFFFF880000000000 起的 512GB 到物理 0
+.org 0x2000                     # 物理地址 0xA000
+.balign 4096
+pdpt_table:
+    .set i, 0
+    .rept 512
+    .quad   (i << 30) | 0x83    # Present | RW | PS (1GB 大页)
+    .set i, i+1
+    .endr
+
+# 映射 0xFFFFFFFF80000000 起的 1GB 到物理 0
+
+.org 0x3000                     # 物理地址 0xB000
+.balign 4096
+pdpt_kernel_table:
+    .skip   (510 * 8)          # 跳过前 510 个条目（均为不存在）
+    .quad   0x83                # 第 510 个条目：映射物理 0 ~ 1GB，Present | RW | PS
+    .skip   (1 * 8)            # 跳过最后一个条目

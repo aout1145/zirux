@@ -13,6 +13,7 @@ var memory: []Region = undefined;
 var memory_count: usize = 0;
 var reserved: []Region = undefined;
 var reserved_count: usize = 0;
+var is_expanding: bool = false;
 
 const Region = packed struct(u128) {
     page_index: hal_page.PageIndex,
@@ -63,11 +64,12 @@ pub fn switchToBuddy() void {
     }
     buddy.init(@intCast(max_paddr / hal_page.page_size));
 
+    // Use rawFree to prevent zig from filling the released memory with 0xAA
     if (memory.len != init_regions_count) {
-        allocator.free(memory);
+        allocator.rawFree(@ptrCast(memory), .fromByteUnits(requested_align), 0);
     }
     if (reserved.len != init_regions_count) {
-        allocator.free(reserved);
+        allocator.rawFree(@ptrCast(reserved), .fromByteUnits(requested_align), 0);
     }
 
     for (memory[0..memory_count]) |region| {
@@ -205,15 +207,21 @@ pub fn makePageMetadata(page_table: mem.page_table.PageTablePtr) !void {
 }
 
 fn update(array: *[]Region, count: *usize, base: hal_page.PhysAddr, len: usize, @"type": RegionType) Allocator.Error!void {
-    if (count.* + 4 >= array.len) {
+    if (count.* + 4 >= array.len and !is_expanding) {
+        is_expanding = true;
         // Expand
-        const new_arr = try allocator.alloc(Region, array.len * 2);
-        @memcpy(new_arr, array.*);
+        const new_arr = try allocator.alignedAlloc(
+            Region,
+            .fromByteUnits(requested_align),
+            array.len * 2,
+        );
+        @memcpy(new_arr[0..array.len], array.*);
         if (array.len != init_regions_count) {
             allocator.free(array.*);
         }
         array.* = new_arr;
         // log.debug(@src(), "expanded", .{});
+        is_expanding = false;
     }
     assert(array.len > count.*);
     array.*[count.*] = .{
@@ -244,9 +252,9 @@ fn isReserved(base: hal_page.PhysAddr, len: usize) bool {
     return false;
 }
 /// alloc() ensures reserved_region are contained by memory_region
-fn alloc(len: usize, @"align": usize) ?hal_page.PhysAddr {
-    assert(len % hal_page.page_size == 0);
-    assert(@"align" % hal_page.page_size == 0);
+fn alloc(unaligned_len: usize, unaligned_align: usize) ?hal_page.PhysAddr {
+    const len = std.mem.alignForwardAnyAlign(usize, unaligned_len, hal_page.page_size);
+    const @"align" = std.mem.alignForwardAnyAlign(usize, unaligned_align, hal_page.page_size);
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable) continue;
         var base = std.mem.alignForwardAnyAlign(hal_page.PhysAddr, region.base(), @"align");
@@ -259,7 +267,8 @@ fn alloc(len: usize, @"align": usize) ?hal_page.PhysAddr {
     }
     return null;
 }
-fn free(base: hal_page.PhysAddr, len: usize) void {
+fn free(base: hal_page.PhysAddr, unaligned_len: usize) void {
+    const len = std.mem.alignForwardAnyAlign(usize, unaligned_len, hal_page.page_size);
     for (reserved[0..reserved_count]) |*region| {
         if (region.base() == base and region.len == len) {
             region.* = .{ .page_index = 0, .len = 0, .type = .no_map };

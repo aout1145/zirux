@@ -12,8 +12,11 @@ pub const arch = @import("arch/arch.zig");
 pub const hal = @import("hal/hal.zig");
 pub const mem = @import("mem/mem.zig");
 pub const sync = @import("sync/sync.zig");
-pub const intr = @import("intr/intr.zig");
 pub const drivers = @import("drivers/drivers.zig");
+pub const time = @import("time/time.zig");
+
+// Kernel main
+pub const kernelMain = @import("main.zig").kernelMain;
 
 // Kernel entry
 export const _start = hal._start;

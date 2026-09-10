@@ -41,6 +41,36 @@ pub const Rflags = packed struct(u64) {
     _reserved5: u42,
 };
 
+/// See also: https://wiki.osdev.org/CPU_Registers_x86-64#CR0
+pub const Cr0 = packed struct(u64) {
+    /// Protected Mode Enable
+    pe: bool,
+    /// Monitor Co-Processor
+    mp: bool,
+    /// Emulation
+    em: bool,
+    /// Task Switched
+    ts: bool,
+    /// Extension Type
+    et: bool,
+    /// Numeric Error
+    ne: bool,
+    _reserved0: u10,
+    /// Write Protect
+    wp: bool,
+    _reserved1: u1,
+    /// Alignment Mask
+    am: bool,
+    _reserved2: u10,
+    /// Not-Write Through
+    nw: bool,
+    /// Cache Disable
+    cd: bool,
+    /// Paging
+    pg: bool,
+    _reserved3: u32,
+};
+
 /// See also: https://wiki.osdev.org/CPU_Registers_x86-64#CR3
 pub const Cr3 = packed struct(u64) {
     _reserved: u12,
@@ -102,6 +132,13 @@ pub const Cr4 = packed struct(u64) {
     pks: bool,
     /// Reserved
     _reserved3: u39,
+};
+
+/// See also: https://wiki.osdev.org/CPU_Registers_x86-64#CR8
+pub const Cr8 = packed struct(u64) {
+    /// Task Priority Register
+    tpr: u4,
+    _reserved: u60,
 };
 
 /// See also: https://wiki.osdev.org/CPU_Registers_x86-64#IA32_EFER
