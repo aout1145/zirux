@@ -42,7 +42,7 @@ pub const Vector = enum(u8) {
     reserved_exception_30 = 30,
     reserved_exception_31 = 31,
     // Interrupts
-    timer = 32,
+    lapic_timer = 32,
     _,
 
     pub const Type = enum {
@@ -256,6 +256,10 @@ pub fn generateIsr(comptime vector: Vector) Isr {
     }.handler;
 }
 export fn isrCommon() callconv(.naked) void {
+    // Context switch
+    asm volatile (
+        \\call spSwitch
+    );
     // Remove general-purpose registers, error code, and vector from the stack
     asm volatile (
         \\popq %%r15
@@ -288,8 +292,11 @@ export fn isrCommon() callconv(.naked) void {
 export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
     // When vector >= 128, pushq will expanded it into 0xFFFFFFFFFFFFFF__,
     // So we &= 0xFF to solve it.
-    ctx.vector &= 0xFF;
-    const handler = arch.cpu.per_cpu.read(Handler, &handlers[ctx.vector]);
+    const vector = Vector.fromNumber(ctx.vector & 0xFF);
+    if (vector.isUseIst() or vector.type() == .interrupt) arch.sched.preemptDisable();
+    defer if (vector.isUseIst() or vector.type() == .interrupt) arch.sched.preemptEnable();
+
+    const handler = arch.cpu.per_cpu.read(Handler, &handlers[vector.number()]);
     handler(ctx);
 }
 

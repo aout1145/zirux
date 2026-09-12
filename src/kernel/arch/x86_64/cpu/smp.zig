@@ -57,6 +57,7 @@ pub fn init() !void {
             arch.@"asm".pause();
         }
     }
+    // ipi.sendRaw(0, 33, .others, .normal);
 }
 
 var ap_gsbase: u64 = 0;
@@ -76,11 +77,12 @@ fn apZigEntry() !void {
     mem.page_table.releaseKernelPageTable(lock_flag);
 
     try arch.intr.init();
+    try arch.time.init();
 
     log.info(@src(), "Initialized successfully.", .{});
     is_finished.store(true, .release);
 
-    root.kernelMain();
+    try root.kernelMain();
 
     unreachable;
 }

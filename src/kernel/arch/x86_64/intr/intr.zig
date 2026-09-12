@@ -26,8 +26,6 @@ pub fn init() !void {
     try apic.init();
 }
 
-var preempt_count: u32 linksection(arch.cpu.per_cpu.section) = 1;
-
 pub inline fn irqSave() u8 {
     const rflags = arch.@"asm".readRflags();
     asm volatile ("cli");
@@ -37,15 +35,4 @@ pub inline fn irqRestore(flag: u8) void {
     var rflags = arch.@"asm".readRflags();
     rflags.@"if" = (flag == 1);
     arch.@"asm".writeRflags(rflags);
-}
-
-pub inline fn getPreemptCount() u32 {
-    return arch.cpu.per_cpu.read(u32, &preempt_count);
-}
-pub inline fn preemptDisable() void {
-    arch.cpu.per_cpu.add(u32, &preempt_count, 1);
-}
-pub inline fn preemptEnable() void {
-    assert(getPreemptCount() != 0);
-    arch.cpu.per_cpu.sub(u32, &preempt_count, 1);
 }

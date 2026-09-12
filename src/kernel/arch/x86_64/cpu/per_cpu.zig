@@ -35,7 +35,7 @@ pub inline fn getLcpuId() u32 {
 }
 
 pub inline fn ptr(T: type, pcp: *T) *T {
-    assert(arch.intr.getPreemptCount() != 0);
+    assert(arch.sched.getPreemptCount() != 0);
     return @ptrFromInt(@intFromPtr(pcp) + arch.@"asm".registers.GsBase.read().gs_base);
 }
 

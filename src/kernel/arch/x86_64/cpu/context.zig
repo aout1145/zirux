@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root");
 const log = root.debug.log;
+const arch = root.arch.x86_64;
 
 pub const Context = packed struct {
     r15: u64,

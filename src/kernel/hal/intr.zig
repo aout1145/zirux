@@ -33,14 +33,3 @@ pub inline fn irqSave() u8 {
 pub inline fn irqRestore(flag: u8) void {
     arch.intr.irqRestore(flag);
 }
-
-/// Return 0 when preempt enabled
-pub inline fn getPreemptCount() u32 {
-    return arch.intr.getPreemptCount();
-}
-pub inline fn preemptDisable() void {
-    arch.intr.preemptDisable();
-}
-pub inline fn preemptEnable() void {
-    arch.intr.preemptEnable();
-}

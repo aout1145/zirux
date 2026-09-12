@@ -6,3 +6,4 @@ pub const sync = @import("sync/sync.zig");
 pub const cpu = @import("cpu/cpu.zig");
 pub const intr = @import("intr/intr.zig");
 pub const time = @import("time/time.zig");
+pub const sched = @import("sched/sched.zig");

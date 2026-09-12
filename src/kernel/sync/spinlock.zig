@@ -8,7 +8,7 @@ pub const SpinLockIrq = enum(u8) {
     pub const Flag = u8;
     pub fn lock(self: *SpinLockIrq) Flag {
         const flag = hal.intr.irqSave();
-        hal.intr.preemptDisable();
+        hal.sched.preemptDisable();
         while (@cmpxchgWeak(
             SpinLockIrq,
             self,
@@ -23,7 +23,7 @@ pub const SpinLockIrq = enum(u8) {
     }
     pub fn unlock(self: *SpinLockIrq, flag: Flag) void {
         @atomicStore(SpinLockIrq, self, .unlocked, .release);
-        hal.intr.preemptEnable();
+        hal.sched.preemptEnable();
         hal.intr.irqRestore(flag);
     }
 };

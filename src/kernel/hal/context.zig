@@ -10,7 +10,3 @@ pub const Context = opaque {
 };
 
 pub const StackPointer = hal.page.PhysAddr;
-pub inline fn switchTo(old_sp: *StackPointer, new_sp: StackPointer) void {
-    _ = old_sp;
-    _ = new_sp;
-}

@@ -29,6 +29,13 @@ pub fn build(b: *std.Build) void {
     const kernel_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .freestanding,
+        .ofmt = .elf,
+        .cpu_features_add = std.Target.x86.featureSet(&.{.soft_float}),
+        .cpu_features_sub = std.Target.x86.featureSet(&.{
+            .mmx,
+            .sse,
+            .sse2,
+        }),
     });
     const exe_kernel = b.addExecutable(.{
         .name = "kernel.elf",
