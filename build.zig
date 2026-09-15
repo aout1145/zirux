@@ -26,6 +26,21 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe_loader);
 
+    const init_target = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .freestanding,
+        .ofmt = .elf,
+    });
+    const exe_init = b.addExecutable(.{
+        .name = "init.elf",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/init/main.zig"),
+            .target = init_target,
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+
     const kernel_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .freestanding,
@@ -51,6 +66,10 @@ pub fn build(b: *std.Build) void {
         .use_lld = true,
     });
     exe_kernel.root_module.addAssemblyFile(b.path("src/kernel/arch/x86_64/boot/trampoline.S"));
+    exe_kernel.root_module.addAnonymousImport(
+        "init_elf",
+        .{ .root_source_file = exe_init.getEmittedBin() },
+    );
     exe_kernel.setLinkerScript(b.path("src/kernel/arch/x86_64/linker.lds"));
     b.installArtifact(exe_kernel);
 
@@ -82,6 +101,7 @@ pub fn build(b: *std.Build) void {
         "-serial",
         "mon:stdio",
         "-no-reboot",
+        // "-no-shutdown",
         "-enable-kvm",
         "-cpu",
         "host",

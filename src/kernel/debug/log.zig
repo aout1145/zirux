@@ -1,7 +1,6 @@
 const std = @import("std");
 const root = @import("root");
-
-const println = root.hal.debug.println;
+const arch = root.arch.target;
 
 inline fn log(
     comptime level: []const u8,
@@ -13,9 +12,9 @@ inline fn log(
     const prefix = std.fmt.bufPrint(
         &buffer,
         "[CPU#{}] {s} {s}:{} ",
-        .{ root.hal.cpu.getLocalCpuId(), level, src.file, src.line },
+        .{ arch.cpu.per_cpu.getLcpuId(), level, src.file, src.line },
     ) catch unreachable;
-    println(prefix, fmt, args);
+    arch.debug.println(prefix, fmt, args);
 }
 pub inline fn debug(comptime src: std.builtin.SourceLocation, comptime fmt: []const u8, args: anytype) void {
     if (@import("builtin").mode == .Debug) {

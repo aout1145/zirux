@@ -31,7 +31,8 @@ pub inline fn getLcpuId() u32 {
         \\xor %ecx, %ecx
         \\cpuid
         : [_] "={edx}" (-> u32),
-    );
+        :
+        : .{ .rax = true, .rbx = true, .rcx = true, .rdx = true });
 }
 
 pub inline fn ptr(T: type, pcp: *T) *T {

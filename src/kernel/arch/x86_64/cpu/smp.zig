@@ -9,7 +9,8 @@ const mem = root.mem;
 const ipi = arch.intr.ipi;
 
 pub var cpu_list: std.ArrayList(hal.cpu.Cpu) = .empty;
-pub var is_finished: std.atomic.Value(bool) = .init(true);
+var is_finished: std.atomic.Value(bool) = .init(true);
+var all_finished: std.atomic.Value(bool) = .init(false);
 
 pub fn init() !void {
     const madt = acpi.xsdt.?.find(acpi.tables.MADT, "APIC").?;
@@ -57,6 +58,7 @@ pub fn init() !void {
             arch.@"asm".pause();
         }
     }
+    all_finished.store(true, .release);
     // ipi.sendRaw(0, 33, .others, .normal);
 }
 
@@ -71,10 +73,8 @@ fn apZigEntry() !void {
     arch.cpu.gdt.init();
 
     arch.mem.page.init();
-    var lock_flag: u8 = undefined;
-    const pt = mem.page_table.getKernelPageTable(&lock_flag);
+    const pt = mem.page_table.getKernelPageTableUnlocked();
     hal.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
-    mem.page_table.releaseKernelPageTable(lock_flag);
 
     try arch.intr.init();
     try arch.time.init();
@@ -82,6 +82,9 @@ fn apZigEntry() !void {
     log.info(@src(), "Initialized successfully.", .{});
     is_finished.store(true, .release);
 
+    while (!all_finished.load(.acquire)) {
+        arch.@"asm".pause();
+    }
     try root.kernelMain();
 
     unreachable;

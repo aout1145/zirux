@@ -122,6 +122,7 @@ fn removeFreeList(index: PageIndex) void {
     meta.list.setPrev(null);
 }
 
+/// For example, order 0 == 4kib
 pub fn alloc(order: u8, @"type": PageType) ?PageIndex {
     const buddy_flag = buddy_lock.lock();
     defer buddy_lock.unlock(buddy_flag);

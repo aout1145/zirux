@@ -50,3 +50,16 @@ pub const Context = packed struct {
         try writer.print("CS     : 0x{X:0>4}", .{ctx.cs});
     }
 };
+
+pub fn init(stack: []u8, entry: u64, userspace: bool) u64 {
+    const ctx: *Context = @ptrFromInt(@intFromPtr(stack.ptr) + stack.len - @sizeOf(Context));
+    const cs: u16 = @bitCast(if (userspace) arch.cpu.gdt.user_cs_selector else arch.cpu.gdt.kernel_cs_selector);
+    const ss: u16 = @bitCast(if (userspace) arch.cpu.gdt.user_ds_selector else arch.cpu.gdt.user_ds_selector);
+    ctx.* = std.mem.zeroInit(Context, .{
+        .rip = entry,
+        .rflags = 0x202, // IF
+        .cs = cs,
+        .ss = ss,
+    });
+    return @intFromPtr(ctx);
+}

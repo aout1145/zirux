@@ -15,6 +15,6 @@ pub inline fn preemptEnable() void {
 }
 
 /// Set switch flag that will cause context switch when return from interrupt/syscall
-pub inline fn switchTo(save_sp: *hal.context.StackPointer, next_sp: hal.context.StackPointer) void {
-    arch.sched.switchTo(save_sp, next_sp);
+pub inline fn contextSwitch(save_sp: *hal.context.StackPointer, next_kernel_stack: []u8, next_sp: hal.context.StackPointer) void {
+    arch.sched.contextSwitch(save_sp, next_kernel_stack, next_sp);
 }

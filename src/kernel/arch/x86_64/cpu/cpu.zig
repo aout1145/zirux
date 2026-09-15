@@ -17,11 +17,6 @@ pub fn init() void {
     cr0.wp = true;
     cr0.am = true;
     arch.@"asm".writeCtrlRegister("cr0", cr0);
-
-    var cr4 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr4, "cr4");
-    cr4.osfxsr = true;
-    cr4.osxmmexcpt = true;
-    arch.@"asm".writeCtrlRegister("cr4", cr4);
 }
 
 pub inline fn endlessHalt() void {

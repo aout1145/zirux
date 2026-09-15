@@ -10,3 +10,7 @@ pub const Context = opaque {
 };
 
 pub const StackPointer = hal.page.PhysAddr;
+
+pub inline fn init(stack: []u8, entry: hal.page.PhysAddr, userspace: bool) StackPointer {
+    return arch.cpu.context.init(stack, entry, userspace);
+}

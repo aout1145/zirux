@@ -42,6 +42,13 @@ pub const Cpu = struct {
 pub inline fn getCpuList() []const Cpu {
     return arch.cpu.smp.cpu_list.items;
 }
+var cpu_id: u64 linksection(per_cpu_section) = std.math.maxInt(u64);
 pub inline fn getLocalCpuId() CpuId {
-    return arch.cpu.per_cpu.getLcpuId();
+    var local_cpu_id = this_cpu.read(u64, &cpu_id);
+    if (local_cpu_id == std.math.maxInt(u64)) {
+        @branchHint(.cold);
+        local_cpu_id = arch.cpu.per_cpu.getLcpuId();
+        this_cpu.write(u64, &cpu_id, local_cpu_id);
+    }
+    return @intCast(local_cpu_id);
 }

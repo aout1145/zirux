@@ -1,12 +1,12 @@
 const std = @import("std");
 const root = @import("root");
 const log = root.debug.log;
-const hal = root.hal;
 
 pub fn kernelMain() !noreturn {
-    try root.time.init();
+    try root.fs.init();
     try root.sched.init();
+    try root.time.init();
 
-    hal.cpu.endlessHalt();
+    root.hal.cpu.endlessHalt();
     unreachable;
 }

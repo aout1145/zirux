@@ -21,13 +21,14 @@ pub fn IdAllocator(Id: type, Value: type) type {
             } else {
                 const old_len = self.value_map.len;
                 const new_len = if (old_len == 0) 1 else old_len * 2;
+                try self.free_queue.ensureTotalCapacity(gpa, new_len);
                 self.value_map = try gpa.realloc(self.value_map, new_len);
                 self.value_map[old_len] = value;
                 for (old_len + 1..new_len) |id| {
                     self.value_map[id] = null;
                 }
                 for (old_len + 1..new_len) |id| {
-                    try self.free_queue.pushBack(gpa, @intCast(id));
+                    self.free_queue.pushBack(gpa, @intCast(id)) catch unreachable;
                 }
                 return @intCast(old_len);
             }
@@ -39,15 +40,15 @@ pub fn IdAllocator(Id: type, Value: type) type {
 
         pub fn free(self: *Self, gpa: Allocator, id: Id) !void {
             assert(self.value_map[id] != null);
-            gpa.destroy(self.value_map[id]);
+            gpa.destroy(self.value_map[id].?);
             self.value_map[id] = null;
             try self.free_queue.pushBack(gpa, id);
         }
 
         pub fn deinit(self: *Self, gpa: Allocator) void {
-            for (self.value_map) |value| {
+            for (self.value_map) |optional_value| if (optional_value) |value| {
                 gpa.destroy(value);
-            }
+            };
             gpa.free(self.value_map);
             self.free_queue.deinit(gpa);
         }

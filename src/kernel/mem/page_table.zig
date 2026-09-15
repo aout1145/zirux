@@ -16,6 +16,9 @@ pub inline fn getKernelPageTable(lock_flag: *u8) PageTablePtr {
 pub inline fn releaseKernelPageTable(lock_flag: u8) void {
     kernel_page_table_lock.unlock(lock_flag);
 }
+pub inline fn getKernelPageTableUnlocked() PageTablePtr {
+    return kernel_page_table.?;
+}
 
 pub const PagingError = error{
     OutOfMemory,
@@ -50,6 +53,44 @@ pub const PageTablePtr = struct {
         return .{
             .global_table = try allocatePage(gpa),
         };
+    }
+
+    pub fn deinit(self: PageTablePtr) void {
+        _ = self;
+        @panic("TODO: deinit");
+    }
+
+    pub inline fn clone(self: PageTablePtr, gpa: Allocator) PagingError!PageTablePtr {
+        return .{ .global_table = try dfsClone(gpa, global_level, self.global_table) };
+    }
+    fn dfsClone(
+        gpa: Allocator,
+        level: PageLevel,
+        table: *align(page_size) const [entries_num]PTE,
+    ) PagingError!*align(page_size) [entries_num]PTE {
+        const new_table = try allocatePage(gpa);
+        errdefer gpa.free(new_table);
+
+        // log.debug(@src(), "{any} {x}", .{ level, @intFromPtr(table) });
+        // for (table) |*hardware_entry| {
+        //     const entry = fromHardware(level, hardware_entry.*);
+        //     log.debug(@src(), "{any}", .{entry});
+        // }
+        @memcpy(new_table, table);
+        errdefer @panic("TODO: clean");
+        for (new_table) |*hardware_entry| {
+            var entry = fromHardware(level, hardware_entry.*);
+            if (!entry.present) continue;
+            // log.debug(@src(), "{any}", .{entry});
+            if (entry.type == .table) {
+                const lower_table: *align(page_size) const [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
+                const new_lower_table = try dfsClone(gpa, level.lower(), lower_table);
+                entry.phys_addr = virt2phys(@intFromPtr(new_lower_table));
+                hardware_entry.* = toHardware(level, entry);
+            }
+        }
+
+        return new_table;
     }
 
     pub fn map(

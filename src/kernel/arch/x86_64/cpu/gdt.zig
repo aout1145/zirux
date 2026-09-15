@@ -167,7 +167,7 @@ fn loadDs(comptime selector: SegmentSelector) void {
         : .{ .di = true });
 }
 
-const TaskStateSegment = packed struct {
+pub const TaskStateSegment = packed struct {
     _reserved0: u32 = 0,
     rsp0: u64,
     rsp1: u64,

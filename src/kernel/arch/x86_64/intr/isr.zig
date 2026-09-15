@@ -184,6 +184,7 @@ pub fn generateIsr(comptime vector: Vector) Isr {
             // Push the vector.
             asm volatile (
                 \\pushq %[vector]
+                \\
                 :
                 : [vector] "n" (vector),
             );
@@ -250,16 +251,12 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                 );
             }
             asm volatile (
-                \\jmp isrCommon
+                \\jmp spSwitch
             );
         }
     }.handler;
 }
 export fn isrCommon() callconv(.naked) void {
-    // Context switch
-    asm volatile (
-        \\call spSwitch
-    );
     // Remove general-purpose registers, error code, and vector from the stack
     asm volatile (
         \\popq %%r15
@@ -303,6 +300,7 @@ export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
 const Handler = *const fn (*arch.cpu.context.Context) void;
 var handlers: [256]Handler linksection(arch.cpu.per_cpu.section) = [_]Handler{unhandledHandler} ** 256;
 fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
+    asm volatile ("cli");
     switch (Vector.fromNumber(ctx.vector).type()) {
         .abort, .fault, .reserved => {
             log.err(@src(), "============ Oops! ===================", .{});
@@ -319,6 +317,10 @@ fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
             log.debug(@src(), "{f}", .{ctx});
         },
         .interrupt => {
+            // Check if kernel panicked
+            if (arch.debug.panic_flag.load(.acquire)) {
+                arch.cpu.endlessHalt();
+            }
             log.debug(@src(), "Unhandled interrupt: {}", .{ctx.vector});
             apic.sendEoi();
         },
@@ -339,7 +341,10 @@ pub fn init(gpa: std.mem.Allocator) !void {
         .fromByteUnits(arch.mem.page.page_size),
         8 * arch.mem.page.page_size,
     );
-    arch.cpu.per_cpu.write(u64, &intr_sp, @intFromPtr(intr_stack.ptr) + intr_stack.len - 8);
+    const local_intr_sp = @intFromPtr(intr_stack.ptr) + intr_stack.len - 8;
+    arch.cpu.per_cpu.write(u64, &intr_sp, local_intr_sp);
+    const local_tss = arch.cpu.per_cpu.ptr(arch.cpu.gdt.TaskStateSegment, &arch.cpu.gdt.tss);
+    local_tss.ist1 = local_intr_sp;
     inline for (0..256) |i| {
         const vector: Vector = @enumFromInt(i);
         idt.setGate(
