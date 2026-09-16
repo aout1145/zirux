@@ -17,15 +17,23 @@ pub fn allocate(gpa: std.mem.Allocator) !u64 {
     return @intFromPtr(mem.ptr) - (@intFromPtr(&__kernel_per_cpu_start) - arch.mem.kernel_base);
 }
 
-pub fn init(gs_base: u64) void {
+pub inline fn init(gs_base: u64) void {
     // Initialize GS.Base
-    var cr4 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr4, "cr4");
-    cr4.fsgsbase = true;
-    arch.@"asm".writeCtrlRegister("cr4", cr4);
-    arch.@"asm".registers.GsBase.write(.{ .gs_base = gs_base });
+    arch.@"asm".writeMsr(arch.@"asm".registers.GsBase.msr, gs_base);
 }
 
-pub inline fn getLcpuId() u32 {
+var gs_bases: std.array_list.Aligned(u64, .fromByteUnits(arch.cpu.cache_line)) = .empty;
+var gs_bases_initalized: bool linksection(section) = false;
+pub fn initFull() !void {
+    const lcpu_id = getLocalCpuId();
+    if (gs_bases.items.len <= lcpu_id) {
+        try gs_bases.resize(root.mem.general_allocator, lcpu_id + 1);
+    }
+    gs_bases.items[lcpu_id] = arch.@"asm".readMsr(arch.@"asm".registers.GsBase.msr);
+    write(bool, &gs_bases_initalized, true);
+}
+
+inline fn getLcpuId() u32 {
     return asm volatile (
         \\mov $0x0B, %eax
         \\xor %ecx, %ecx
@@ -34,10 +42,25 @@ pub inline fn getLcpuId() u32 {
         :
         : .{ .rax = true, .rbx = true, .rcx = true, .rdx = true });
 }
+var cpu_id: u64 linksection(section) = std.math.maxInt(u64);
+pub inline fn getLocalCpuId() root.hal.cpu.CpuId {
+    var local_cpu_id = read(u64, &cpu_id);
+    if (local_cpu_id == std.math.maxInt(u64) or !read(bool, &gs_bases_initalized)) {
+        @branchHint(.cold);
+        local_cpu_id = getLcpuId();
+        write(u64, &cpu_id, local_cpu_id);
+    }
+    return @intCast(local_cpu_id);
+}
 
 pub inline fn ptr(T: type, pcp: *T) *T {
-    assert(arch.sched.getPreemptCount() != 0);
-    return @ptrFromInt(@intFromPtr(pcp) + arch.@"asm".registers.GsBase.read().gs_base);
+    if (!read(bool, &gs_bases_initalized)) {
+        @branchHint(.cold);
+        return @ptrFromInt(@intFromPtr(pcp) + arch.@"asm".readMsr(arch.@"asm".registers.GsBase.msr));
+    } else {
+        @branchHint(.likely);
+        return @ptrFromInt(@intFromPtr(pcp) + gs_bases.items[root.hal.cpu.getLocalCpuId()]);
+    }
 }
 
 pub inline fn read(T: type, pcp: *const T) T {

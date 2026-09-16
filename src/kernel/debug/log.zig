@@ -1,5 +1,6 @@
 const std = @import("std");
 const root = @import("root");
+const hal = root.hal;
 const arch = root.arch.target;
 
 inline fn log(
@@ -12,7 +13,7 @@ inline fn log(
     const prefix = std.fmt.bufPrint(
         &buffer,
         "[CPU#{}] {s} {s}:{} ",
-        .{ arch.cpu.per_cpu.getLcpuId(), level, src.file, src.line },
+        .{ hal.cpu.getLocalCpuId(), level, src.file, src.line },
     ) catch unreachable;
     arch.debug.println(prefix, fmt, args);
 }

@@ -41,11 +41,11 @@ pub inline fn init() !void {
     try initIdleProc();
     try initInitProc();
 
-    var test_file = try fs.open("/init", .{ .seekable = true });
-    defer fs.close(&test_file) catch {};
-    _ = try createProcess(&test_file, .{
-        .proc_name = "TEST".* ++ .{0} ** 4,
-    });
+    // var test_file = try fs.open("/init", .{ .seekable = true });
+    // defer fs.close(&test_file) catch {};
+    // _ = try createProcess(&test_file, .{
+    //     .proc_name = "TEST".* ++ .{0} ** 4,
+    // });
 }
 
 fn initIdleProc() !void {
@@ -170,6 +170,7 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
     const tid = try thread.createThread(proc, header.entry, .{});
     proc.thrd_ids.appendAssumeCapacity(tid);
 
+    proc.unref();
     return pid;
 }
 
@@ -193,3 +194,11 @@ const ProgramHeaderIterator = struct {
         return phdr;
     }
 };
+
+// Syscalls
+pub const syscall = root.syscall;
+pub fn sysExit(_: []const usize) syscall.Result {
+    log.debug(@src(), "exit", .{});
+    // unreachable;
+    return .success;
+}

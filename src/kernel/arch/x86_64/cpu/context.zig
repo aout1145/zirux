@@ -2,8 +2,9 @@ const std = @import("std");
 const root = @import("root");
 const log = root.debug.log;
 const arch = root.arch.x86_64;
+const assert = std.debug.assert;
 
-pub const Context = packed struct {
+pub const Context = extern struct {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -51,15 +52,88 @@ pub const Context = packed struct {
     }
 };
 
+export fn reschedule() callconv(.c) void {
+    if (root.sched.isNeedReschedule()) {
+        root.sched.clearRescheduleFlag();
+        root.sched.thread.schedule();
+    }
+}
+
+const SwitchContext = extern struct {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    rbp: u64,
+    rbx: u64,
+    rip: u64,
+};
+
+extern fn isrExit() callconv(.naked) void;
 pub fn init(stack: []u8, entry: u64, userspace: bool) u64 {
-    const ctx: *Context = @ptrFromInt(@intFromPtr(stack.ptr) + stack.len - @sizeOf(Context));
+    const stack_base = @intFromPtr(stack.ptr) + stack.len;
+
+    const sw_ctx: *SwitchContext = @ptrFromInt(stack_base - @sizeOf(Context) - @sizeOf(SwitchContext));
+    sw_ctx.* = std.mem.zeroInit(SwitchContext, .{
+        .rip = @intFromPtr(&isrExit),
+    });
+
+    const ctx: *Context = @ptrFromInt(stack_base - @sizeOf(Context));
     const cs: u16 = @bitCast(if (userspace) arch.cpu.gdt.user_cs_selector else arch.cpu.gdt.kernel_cs_selector);
-    const ss: u16 = @bitCast(if (userspace) arch.cpu.gdt.user_ds_selector else arch.cpu.gdt.user_ds_selector);
+    const ss: u16 = @bitCast(if (userspace) arch.cpu.gdt.user_ds_selector else arch.cpu.gdt.kernel_ds_selector);
     ctx.* = std.mem.zeroInit(Context, .{
         .rip = entry,
         .rflags = 0x202, // IF
         .cs = cs,
         .ss = ss,
     });
-    return @intFromPtr(ctx);
+    return @intFromPtr(sw_ctx);
+}
+
+// TODO: Support FS/GS.base
+pub inline fn switchTo(save_sp: *u64, next_stack: []u8, next_sp: u64) void {
+    assert(root.sched.getPreemptCount() == 0);
+    // Update tss.rsp0
+    const tss = arch.cpu.per_cpu.ptr(arch.cpu.gdt.TaskStateSegment, &arch.cpu.gdt.tss);
+    tss.rsp0 = @intFromPtr(next_stack.ptr) + next_stack.len;
+    // Update syscall.kernel_rsp
+    arch.cpu.per_cpu.write(u64, &arch.syscall.kernel_rsp, @intFromPtr(next_stack.ptr) + next_stack.len);
+    // Perform context switch
+    cSwitchTo(save_sp, next_sp);
+}
+fn cSwitchTo(save_sp: *u64, next_sp: u64) callconv(.c) void {
+    asm volatile (
+        \\call doSwitchTo
+        :
+        : [save_sp] "{rax}" (save_sp),
+          [next_sp] "{rcx}" (next_sp),
+        : .{
+          .memory = true,
+          .rbx = true,
+          .rbp = true,
+          .r12 = true,
+          .r13 = true,
+          .r14 = true,
+          .r15 = true,
+          .rsp = true,
+        });
+}
+export fn doSwitchTo() callconv(.naked) void {
+    asm volatile (
+        \\pushq %%rbx
+        \\pushq %%rbp
+        \\pushq %%r12
+        \\pushq %%r13
+        \\pushq %%r14
+        \\pushq %%r15
+        \\movq %%rsp, (%%rax)
+        \\movq %%rcx, %%rsp
+        \\popq %%r15
+        \\popq %%r14
+        \\popq %%r13
+        \\popq %%r12
+        \\popq %%rbp
+        \\popq %%rbx
+        \\retq
+    );
 }

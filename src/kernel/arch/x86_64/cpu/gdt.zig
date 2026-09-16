@@ -7,7 +7,7 @@ const per_cpu = arch.cpu.per_cpu;
 
 pub fn init() void {
     // Refresh %gs will clear GS.Base, so we save it first.
-    const gs_base = arch.@"asm".registers.GsBase.read();
+    const gs_base = arch.@"asm".readMsr(arch.@"asm".registers.GsBase.msr);
 
     const local_gdtr = per_cpu.ptr(GdtRegister, &gdtr);
     const local_gdt = per_cpu.ptr([max_num_gdt]SegmentDescriptor, &gdt);
@@ -52,7 +52,7 @@ pub fn init() void {
     loadTss(0, tss_index);
 
     // Restore GS.Base
-    arch.@"asm".registers.GsBase.write(gs_base);
+    arch.@"asm".writeMsr(arch.@"asm".registers.GsBase.msr, gs_base);
 }
 
 const SegmentDescriptor = packed struct(u64) {

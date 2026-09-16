@@ -41,8 +41,10 @@ fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
     try root.drivers.acpi.initFromUefiSystemTable(system_table);
 
-    // Initialize interrupt and timer
+    // Initialize other subsystems
+    try arch.cpu.per_cpu.initFull();
     try arch.intr.init();
+    try arch.syscall.init();
     try arch.time.init();
 
     log.info(@src(), "Initialized successfully.", .{});

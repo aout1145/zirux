@@ -8,8 +8,8 @@ const jiffies_cpu = 0;
 var jiffies_count: std.atomic.Value(u64) = .init(0);
 
 pub fn init() !void {
-    hal.sched.preemptDisable();
-    defer hal.sched.preemptDisable();
+    root.sched.preemptDisable();
+    defer root.sched.preemptEnable();
 
     const tick_device = hal.time.getTickDevice();
     tick_device.handler = if (hal.cpu.getLocalCpuId() == jiffies_cpu) jiffiesHandler else handler;
@@ -23,7 +23,7 @@ fn jiffiesHandler(ctx: *hal.context.Context, timer: *hal.time.TimerDevice) void 
 fn handler(ctx: *hal.context.Context, timer: *hal.time.TimerDevice) void {
     _ = ctx;
     _ = timer;
-    root.sched.thread.schedule();
+    root.sched.setRescheduleFlag();
     // log.debug(@src(), "{}", .{jiffies.getClock()});
 }
 

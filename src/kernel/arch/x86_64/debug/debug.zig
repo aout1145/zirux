@@ -38,7 +38,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
 
     arch.intr.ipi.sendRaw(0, 0, .others, .nmi);
 
-    printlnUnlocked(null, "KERNEL PANIC on CPU#{} : {s}", .{ arch.cpu.per_cpu.getLcpuId(), msg });
+    printlnUnlocked(null, "KERNEL PANIC on CPU#{} : {s}", .{ arch.cpu.per_cpu.getLocalCpuId(), msg });
 
     var buffer: [256]usize = undefined;
     const trace = std.debug.captureCurrentStackTrace(.{

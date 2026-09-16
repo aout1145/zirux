@@ -76,7 +76,9 @@ fn apZigEntry() !void {
     const pt = mem.page_table.getKernelPageTableUnlocked();
     hal.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
 
+    try arch.cpu.per_cpu.initFull();
     try arch.intr.init();
+    try arch.syscall.init();
     try arch.time.init();
 
     log.info(@src(), "Initialized successfully.", .{});

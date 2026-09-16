@@ -14,3 +14,7 @@ pub const StackPointer = hal.page.PhysAddr;
 pub inline fn init(stack: []u8, entry: hal.page.PhysAddr, userspace: bool) StackPointer {
     return arch.cpu.context.init(stack, entry, userspace);
 }
+
+pub inline fn switchTo(save_sp: *StackPointer, next_kernel_stack: []u8, next_sp: StackPointer) void {
+    return arch.cpu.context.switchTo(save_sp, next_kernel_stack, next_sp);
+}

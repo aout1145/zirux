@@ -4,50 +4,31 @@ const arch = root.arch.x86_64;
 const assert = std.debug.assert;
 const log = root.debug.log;
 
-var preempt_count: u32 linksection(arch.cpu.per_cpu.section) = 1;
-pub inline fn getPreemptCount() u32 {
-    return arch.cpu.per_cpu.read(u32, &preempt_count);
-}
-pub inline fn preemptDisable() void {
-    arch.cpu.per_cpu.add(u32, &preempt_count, 1);
-}
-pub inline fn preemptEnable() void {
-    assert(getPreemptCount() != 0);
-    arch.cpu.per_cpu.sub(u32, &preempt_count, 1);
-}
-
-var __save_sp: ?*u64 linksection(arch.cpu.per_cpu.section) = null;
-var __next_sp: u64 linksection(arch.cpu.per_cpu.section) = 0;
-pub inline fn contextSwitch(save_sp: *u64, stack: []u8, next_sp: u64) void {
-    assert(arch.cpu.per_cpu.read(?*u64, &__save_sp) == null);
-    assert(arch.cpu.per_cpu.read(u64, &__next_sp) == 0);
-    arch.cpu.per_cpu.write(?*u64, &__save_sp, save_sp);
-    arch.cpu.per_cpu.write(u64, &__next_sp, next_sp);
-    // Update rsp0
+export var save_sp: ?*u64 linksection(arch.cpu.per_cpu.section) = null;
+export var next_sp: u64 linksection(arch.cpu.per_cpu.section) = 0;
+pub inline fn contextSwitch(arg_save_sp: *u64, stack: []u8, arg_next_sp: u64) void {
+    assert(arch.cpu.per_cpu.read(?*u64, &save_sp) == null);
+    assert(arch.cpu.per_cpu.read(u64, &next_sp) == 0);
+    arch.cpu.per_cpu.write(?*u64, &save_sp, arg_save_sp);
+    arch.cpu.per_cpu.write(u64, &next_sp, arg_next_sp);
+    // Update tss.rsp0
     const tss = arch.cpu.per_cpu.ptr(arch.cpu.gdt.TaskStateSegment, &arch.cpu.gdt.tss);
     tss.rsp0 = @intFromPtr(stack.ptr) + stack.len;
+    // Update syscall.kernel_rsp
+    arch.cpu.per_cpu.write(u64, &arch.syscall.kernel_rsp, @intFromPtr(stack.ptr) + stack.len);
 }
 export fn spSwitch() callconv(.naked) void {
     asm volatile (
-        \\cmpq $0, %%gs:(%[next_sp])
+        \\cmpq $0, %%gs:next_sp
         \\je 1f
-        \\cmpl $0, %%gs:(%[preempt_count])
+        \\cmpl $0, %%gs:preempt_count
         \\je 2f
-        \\movq %%gs:(%[save_sp]), %%rax
+        \\movq %%gs:save_sp, %%rax
         \\movq %%rsp, (%%rax)
-        \\movq %%gs:(%[next_sp]), %%rsp
+        \\movq %%gs:next_sp, %%rsp
         \\2:
-        \\movq $0, %%gs:(%[save_sp])
-        \\movq $0, %%gs:(%[next_sp])
+        \\movq $0, %%gs:save_sp
+        \\movq $0, %%gs:next_sp
         \\1:
-        \\jmp isrCommon
-        :
-        : [next_sp] "r" (&__next_sp),
-          [save_sp] "r" (&__save_sp),
-          [preempt_count] "r" (&preempt_count),
-        : .{
-          .memory = true,
-          .rsp = true,
-          .rax = true,
-        });
+    );
 }

@@ -164,7 +164,7 @@ pub const Vector = enum(u8) {
 };
 
 const Isr = *const fn () callconv(.naked) void;
-var intr_sp: u64 linksection(arch.cpu.per_cpu.section) = 0;
+export var intr_sp: u64 linksection(arch.cpu.per_cpu.section) = 0;
 pub fn generateIsr(comptime vector: Vector) Isr {
     return struct {
         fn handler() callconv(.naked) void {
@@ -225,13 +225,11 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                 asm volatile (
                     \\movq %%rsp, %%rdi
                     // Switch to new stack.
-                    \\movq %%gs:(%[sp]), %%rsp
+                    \\movq %%gs:intr_sp, %%rsp
                     \\pushq %%rdi
                     // Call the dispatcher.
                     \\call intrZigEntry
                     \\popq %%rsp
-                    :
-                    : [sp] "r" (&intr_sp),
                 );
             } else {
                 // Exception: use the kernel stack of process
@@ -250,13 +248,27 @@ pub fn generateIsr(comptime vector: Vector) Isr {
                     \\movq 8(%%rsp), %%rsp
                 );
             }
+            // Try reschedule
+            if (!vector.isUseIst()) {
+                asm volatile (
+                    \\
+                    // Align stack to 16 bytes.
+                    \\pushq %%rsp
+                    \\pushq (%%rsp)
+                    \\andq $-0x10, %%rsp
+                    // Call reschedule
+                    \\call reschedule
+                    // Restore the stack.
+                    \\movq 8(%%rsp), %%rsp
+                );
+            }
             asm volatile (
-                \\jmp spSwitch
+                \\jmp isrExit
             );
         }
     }.handler;
 }
-export fn isrCommon() callconv(.naked) void {
+export fn isrExit() callconv(.naked) void {
     // Remove general-purpose registers, error code, and vector from the stack
     asm volatile (
         \\popq %%r15
@@ -290,8 +302,8 @@ export fn intrZigEntry(ctx: *arch.cpu.context.Context) callconv(.c) void {
     // When vector >= 128, pushq will expanded it into 0xFFFFFFFFFFFFFF__,
     // So we &= 0xFF to solve it.
     const vector = Vector.fromNumber(ctx.vector & 0xFF);
-    if (vector.isUseIst() or vector.type() == .interrupt) arch.sched.preemptDisable();
-    defer if (vector.isUseIst() or vector.type() == .interrupt) arch.sched.preemptEnable();
+    if (vector.isUseIst() or vector.type() == .interrupt) root.sched.preemptDisable();
+    defer if (vector.isUseIst() or vector.type() == .interrupt) root.sched.preemptEnable();
 
     const handler = arch.cpu.per_cpu.read(Handler, &handlers[vector.number()]);
     handler(ctx);

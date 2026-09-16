@@ -28,13 +28,13 @@ pub const Thread = struct {
     pub inline fn ref(self: *Thread) void {
         return sync.ref(u32, &self._refcount);
     }
-    pub inline fn unref(self: *Thread) bool {
+    pub inline fn unref(self: *Thread) void {
         if (sync.unref(u32, &self._refcount)) {
             const lock_flag = thread_lock.lock();
             defer thread_lock.unlock(lock_flag);
             self.proc.unref();
             vmap_allocator.free(self.stack);
-            threads.free(allocator, self.thrd_id);
+            threads.free(allocator, self.thrd_id) catch {};
         }
     }
 };
@@ -43,6 +43,7 @@ pub const priority = struct {
     pub const realtime = 0;
     pub const high = 1;
     pub const normal = 2;
+    pub const idle = 255;
 };
 
 var thread_lock: sync.SpinLockIrq = .unlocked;
@@ -53,8 +54,10 @@ pub fn init(idle_proc: *process.Process) !ThreadId {
     const local_cpu_id = hal.cpu.getLocalCpuId();
 
     // Initialize sched_queue
-    const lock_flag = thread_lock.lock();
-    defer thread_lock.unlock(lock_flag);
+    const lock_flag1 = thread_lock.lock();
+    defer thread_lock.unlock(lock_flag1);
+    const lock_flag2 = sched_queue_lock.lock();
+    defer sched_queue_lock.unlock(lock_flag2);
 
     if (sched_queue.items.len <= local_cpu_id)
         try sched_queue.resize(allocator, local_cpu_id + 1);
@@ -72,13 +75,19 @@ pub fn init(idle_proc: *process.Process) !ThreadId {
         .stack = undefined,
         .priority = 0,
     };
+    idle_proc.ref();
+
     const idle_sched_elem: ScheduleElem = .{
         .thrd = idle_thrd,
         .vcputime = std.math.maxInt(u64),
     };
+
     const local_sched_queue = &sched_queue.items[local_cpu_id];
+    idle_thrd.ref();
     try local_sched_queue.push(allocator, idle_sched_elem);
+
     const local_current_elem = hal.cpu.this_cpu.ptr(ScheduleElem, &current_elem);
+    idle_thrd.ref();
     local_current_elem.* = idle_sched_elem;
 
     return idle_tid;
@@ -95,6 +104,7 @@ pub fn createThread(proc: *process.Process, entry: hal.page.VirtAddr, options: O
     errdefer vmap_allocator.free(stack);
 
     const tid = try threads.alloc(allocator);
+    errdefer threads.free(allocator, tid) catch {};
     const thrd = threads.get(tid).?;
     thrd.* = .{
         ._refcount = 1,
@@ -128,7 +138,7 @@ var sched_queue: std.ArrayList(ScheduleQueue) = .empty;
 var sched_time: u64 linksection(hal.cpu.per_cpu_section) = 0;
 var current_elem: ScheduleElem linksection(hal.cpu.per_cpu_section) = undefined;
 
-inline fn add(thrd: *Thread) !void {
+fn add(thrd: *Thread) !void {
     const lock_flag = sched_queue_lock.lock();
     defer sched_queue_lock.unlock(lock_flag);
 
@@ -145,23 +155,34 @@ inline fn add(thrd: *Thread) !void {
     };
 
     const cpu_sched_queue = &sched_queue.items[cpu_id];
-    var iter = cpu_sched_queue.iterator();
-    var total_vcputime: u64 = 0;
-    var total_count: usize = 0;
-    while (iter.next()) |elem| {
-        if (elem.thrd.priority == 0) continue;
-        total_vcputime += elem.vcputime;
-        total_count += 1;
-    }
-    const init_vcputime = if (total_vcputime == 0) 0 else total_vcputime / total_count;
-    log.debug(@src(), "add thread {} on cpu#{}, vcputime: {}", .{ thrd.thrd_id, cpu_id, init_vcputime });
+
+    const vcputime = if (thrd.priority == priority.realtime) 0 else blk: {
+        var iter = cpu_sched_queue.iterator();
+        var total_vcputime: u64 = 0;
+        var total_count: usize = 0;
+        while (iter.next()) |elem| {
+            if (elem.thrd.priority == 0) continue;
+            total_vcputime += elem.vcputime;
+            total_count += 1;
+        }
+        break :blk if (total_vcputime == 0) 0 else total_vcputime / total_count;
+    };
+
+    // log.debug(@src(), "add thread {} on cpu#{}, vcputime: {}", .{ thrd.thrd_id, cpu_id, vcputime });
+    thrd.ref();
     try cpu_sched_queue.push(allocator, .{
         .thrd = thrd,
-        .vcputime = init_vcputime,
+        .vcputime = vcputime,
     });
 }
 
+var pending_unref: ?*Thread linksection(hal.cpu.per_cpu_section) = null;
 pub fn schedule() void {
+    if (hal.cpu.this_cpu.read(?*Thread, &pending_unref)) |thrd| {
+        hal.cpu.this_cpu.write(?*Thread, &pending_unref, null);
+        thrd.unref();
+    }
+
     const local_cpu_id = hal.cpu.getLocalCpuId();
     const lock_flag = sched_queue_lock.lock();
     const local_sched_queue = &sched_queue.items[local_cpu_id];
@@ -176,16 +197,24 @@ pub fn schedule() void {
     // log.debug(@src(), "thread {}: new vcputime {}", .{ local_current_elem.thrd.thrd_id, local_current_elem.vcputime });
     // Get next sched_elem
     const next_elem = local_sched_queue.peek().?;
+    next_elem.thrd.ref();
     sched_queue_lock.unlock(lock_flag);
 
     if (local_current_elem.thrd.thrd_id != next_elem.thrd.thrd_id) {
-        log.debug(@src(), "switch to tid {}", .{next_elem.thrd.thrd_id});
-        hal.sched.contextSwitch(&local_current_elem.thrd.sp, next_elem.thrd.stack, next_elem.thrd.sp);
         if (local_current_elem.thrd.proc.proc_id != next_elem.thrd.proc.proc_id) {
             log.debug(@src(), "switch to pid {}", .{next_elem.thrd.proc.proc_id});
             const new_page_table = next_elem.thrd.proc.page_table;
             hal.page.writePagingBase(@intFromPtr(new_page_table.global_table) - hal.page.direct_map_base);
         }
+
+        log.debug(@src(), "switch to tid {}", .{next_elem.thrd.thrd_id});
+        const current_thrd = local_current_elem.thrd;
         local_current_elem.* = next_elem;
+        // Unref on next schedule to avoid use-after-free
+        hal.cpu.this_cpu.write(?*Thread, &pending_unref, current_thrd);
+
+        hal.context.switchTo(&current_thrd.sp, next_elem.thrd.stack, next_elem.thrd.sp);
+    } else {
+        next_elem.thrd.unref();
     }
 }

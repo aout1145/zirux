@@ -8,6 +8,7 @@ pub const panic = hal.debug.panicFn;
 /// NOTE: Not use except architecture-related code.
 ///       Consider use HAL.
 pub const arch = @import("arch/arch.zig");
+
 // Modules
 pub const hal = @import("hal/hal.zig");
 pub const mem = @import("mem/mem.zig");
@@ -17,6 +18,7 @@ pub const time = @import("time/time.zig");
 pub const sched = @import("sched/sched.zig");
 pub const utils = @import("utils/utils.zig");
 pub const fs = @import("fs/vfs.zig");
+pub const syscall = @import("syscall/syscall.zig");
 
 // Kernel main
 pub const kernelMain = @import("main.zig").kernelMain;
