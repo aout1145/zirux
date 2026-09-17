@@ -18,8 +18,11 @@ pub const Process = struct {
     proc_name: [8]u8,
     proc_id: ProcessId,
 
+    /// page_table, thrd_ids are non-thread-safe
+    lock: sync.SpinLockIrq,
     page_table: mem.page_table.PageTablePtr,
     thrd_ids: std.ArrayList(thread.ThreadId),
+
     pages: std.ArrayList(hal.page.PageIndex),
 
     pub inline fn ref(self: *Process) void {
@@ -27,14 +30,16 @@ pub const Process = struct {
     }
     pub inline fn unref(self: *Process) void {
         if (sync.unref(u32, &self._refcount)) {
-            @panic("TODO: clean");
+            assert(self.thrd_ids.items.len == 0);
+            self.page_table.deinit(allocator);
+            // TODO: free pages
+            processes.free(allocator, self.proc_id) catch {};
         }
     }
 };
 
 const init_proc_cpu = 0;
 var idle_created: std.atomic.Value(bool) = .init(false);
-var process_lock: sync.SpinLockIrq = .unlocked;
 var processes: utils.IdAllocator(ProcessId, Process) = .empty;
 
 pub inline fn init() !void {
@@ -50,32 +55,28 @@ pub inline fn init() !void {
 
 fn initIdleProc() !void {
     if (hal.cpu.getLocalCpuId() == init_proc_cpu) {
-        const lock_flag = process_lock.lock();
-        defer process_lock.unlock(lock_flag);
-
         // Create IDLE(0) process
-        const idle_pid = try processes.alloc(allocator);
-        assert(idle_pid == 0);
-        const idle_proc = processes.get(idle_pid).?;
-        idle_proc.* = .{
+        const idle_pid = try processes.alloc(allocator, .{
             ._refcount = 1,
             .proc_name = "IDLE".* ++ .{0} ** 4,
-            .proc_id = idle_pid,
+            .proc_id = undefined,
+            .lock = .unlocked,
             .page_table = mem.page_table.getKernelPageTableUnlocked(), // Directly use kernel page table
             .thrd_ids = .empty,
             .pages = .empty,
-        };
+        }, "proc_id");
+        assert(idle_pid == 0);
 
         idle_created.store(true, .release);
     }
     // Wait for IDLE being created
     while (!idle_created.load(.acquire)) {
-        hal.sync.spinHint();
+        hal.cpu.spinHint();
     }
 
-    const lock_flag = process_lock.lock();
-    defer process_lock.unlock(lock_flag);
     const idle_proc = processes.get(0).?;
+    const lock_flag = idle_proc.lock.lock();
+    defer idle_proc.lock.unlock(lock_flag);
     try idle_proc.thrd_ids.append(allocator, try thread.init(idle_proc));
 }
 
@@ -102,7 +103,7 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
         defer mem.page_table.releaseKernelPageTable(lock_flag);
         break :blk try kernel_page_table.clone(allocator);
     };
-    errdefer pt.deinit();
+    errdefer pt.deinit(allocator);
 
     // log.debug(@src(), "1", .{});
     var pages: std.ArrayList(hal.page.PageIndex) = .empty;
@@ -151,22 +152,23 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
     };
 
     // log.debug(@src(), "3", .{});
-    const lock_flag = process_lock.lock();
-    defer process_lock.unlock(lock_flag);
-    const pid = try processes.alloc(allocator);
-    errdefer processes.free(allocator, pid) catch {};
-    const proc = processes.get(pid).?;
-    proc.* = .{
+    const pid = try processes.alloc(allocator, .{
         ._refcount = 1,
         .proc_name = options.proc_name,
-        .proc_id = pid,
+        .proc_id = undefined,
+        .lock = .unlocked,
         .page_table = pt,
         .thrd_ids = .empty,
         .pages = pages,
-    };
+    }, "proc_id");
+    errdefer processes.free(allocator, pid) catch {};
+
+    const proc = processes.get(pid).?;
+    const lock_flag = proc.lock.lock();
+    defer proc.lock.unlock(lock_flag);
+
     try proc.thrd_ids.ensureUnusedCapacity(allocator, 1);
     errdefer proc.thrd_ids.deinit(allocator);
-
     const tid = try thread.createThread(proc, header.entry, .{});
     proc.thrd_ids.appendAssumeCapacity(tid);
 
@@ -197,8 +199,20 @@ const ProgramHeaderIterator = struct {
 
 // Syscalls
 pub const syscall = root.syscall;
-pub fn sysExit(_: []const usize) syscall.Result {
-    log.debug(@src(), "exit", .{});
-    // unreachable;
+pub fn sysExit(args: []const usize) syscall.Result {
+    const exit_value = args[0];
+    _ = exit_value;
+
+    const pid = thread.getLocalCurrentThread().proc.proc_id;
+    const proc = processes.get(pid).?;
+
+    proc.ref();
+    const lock_flag = proc.lock.lock();
+    for (proc.thrd_ids.items) |tid| {
+        thread.kill(tid);
+    }
+    proc.thrd_ids.clearAndFree(allocator);
+    proc.lock.unlock(lock_flag);
+    proc.unref();
     return .success;
 }

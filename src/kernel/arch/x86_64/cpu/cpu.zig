@@ -19,8 +19,12 @@ pub fn init() void {
     arch.@"asm".writeCtrlRegister("cr0", cr0);
 }
 
+pub inline fn spinHint() void {
+    arch.@"asm".pause();
+}
+
 pub inline fn endlessHalt() void {
     while (true) {
-        asm volatile ("hlt");
+        arch.@"asm".halt();
     }
 }

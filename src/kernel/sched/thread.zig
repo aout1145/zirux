@@ -16,22 +16,22 @@ pub const ThreadId = u32;
 pub const Thread = struct {
     _refcount: u32,
 
-    cpu_id: ?hal.cpu.CpuId,
     thrd_id: ThreadId,
     proc: *process.Process,
 
     sp: hal.context.StackPointer,
     stack: []u8,
 
-    priority: u8,
+    is_cpu_attached: std.atomic.Value(bool),
+    attached_cpu_id: std.atomic.Value(hal.cpu.CpuId),
+
+    priority: std.atomic.Value(u8),
 
     pub inline fn ref(self: *Thread) void {
         return sync.ref(u32, &self._refcount);
     }
     pub inline fn unref(self: *Thread) void {
         if (sync.unref(u32, &self._refcount)) {
-            const lock_flag = thread_lock.lock();
-            defer thread_lock.unlock(lock_flag);
             self.proc.unref();
             vmap_allocator.free(self.stack);
             threads.free(allocator, self.thrd_id) catch {};
@@ -46,46 +46,51 @@ pub const priority = struct {
     pub const idle = 255;
 };
 
-var thread_lock: sync.SpinLockIrq = .unlocked;
 var threads: utils.IdAllocator(ThreadId, Thread) = .empty;
 
+var init_lock: sync.SpinLockIrq = .unlocked;
 /// Return idle tid of this cpu
 pub fn init(idle_proc: *process.Process) !ThreadId {
     const local_cpu_id = hal.cpu.getLocalCpuId();
 
-    // Initialize sched_queue
-    const lock_flag1 = thread_lock.lock();
-    defer thread_lock.unlock(lock_flag1);
-    const lock_flag2 = sched_queue_lock.lock();
-    defer sched_queue_lock.unlock(lock_flag2);
+    { // Initialize sched_queue
+        const lock_flag = init_lock.lock();
+        defer init_lock.unlock(lock_flag);
 
-    if (sched_queue.items.len <= local_cpu_id)
-        try sched_queue.resize(allocator, local_cpu_id + 1);
-    sched_queue.items[local_cpu_id] = .empty;
+        if (sched_queue.items.len <= local_cpu_id)
+            try sched_queue.resize(allocator, local_cpu_id + 1);
+        sched_queue.items[local_cpu_id] = .{ .lock = .unlocked, .queue = .empty };
+    }
 
     // Create idle thread
-    const idle_tid = try threads.alloc(allocator);
-    const idle_thrd = threads.get(idle_tid).?;
-    idle_thrd.* = .{
+    idle_proc.ref();
+    const idle_tid = try threads.alloc(allocator, .{
         ._refcount = 1,
-        .cpu_id = hal.cpu.getLocalCpuId(),
-        .thrd_id = idle_tid,
+        .thrd_id = undefined,
         .proc = idle_proc,
         .sp = undefined,
-        .stack = undefined,
-        .priority = 0,
-    };
-    idle_proc.ref();
+        .stack = &.{},
+        .is_cpu_attached = .init(true),
+        .attached_cpu_id = .init(hal.cpu.getLocalCpuId()),
+        .priority = .init(0),
+    }, "thrd_id");
+    const idle_thrd = threads.get(idle_tid).?;
 
     const idle_sched_elem: ScheduleElem = .{
         .thrd = idle_thrd,
         .vcputime = std.math.maxInt(u64),
     };
 
-    const local_sched_queue = &sched_queue.items[local_cpu_id];
-    idle_thrd.ref();
-    try local_sched_queue.push(allocator, idle_sched_elem);
+    { // Add idle thread to schedule queue
+        const local_sched_queue = &sched_queue.items[local_cpu_id];
+        const lock_flag = local_sched_queue.lock.lock();
+        defer local_sched_queue.lock.unlock(lock_flag);
 
+        idle_thrd.ref();
+        try local_sched_queue.queue.push(allocator, idle_sched_elem);
+    }
+
+    // Set idle thread as the current
     const local_current_elem = hal.cpu.this_cpu.ptr(ScheduleElem, &current_elem);
     idle_thrd.ref();
     local_current_elem.* = idle_sched_elem;
@@ -97,71 +102,74 @@ pub const Options = struct {
     priority: u8 = priority.normal,
 };
 pub fn createThread(proc: *process.Process, entry: hal.page.VirtAddr, options: Options) !ThreadId {
-    const lock_flag = thread_lock.lock();
-    defer thread_lock.unlock(lock_flag);
-
     const stack = try vmap_allocator.alignedAlloc(u8, .fromByteUnits(hal.page.page_size), kernel_stack_size);
     errdefer vmap_allocator.free(stack);
 
-    const tid = try threads.alloc(allocator);
-    errdefer threads.free(allocator, tid) catch {};
-    const thrd = threads.get(tid).?;
-    thrd.* = .{
+    proc.ref();
+    errdefer proc.unref();
+
+    const tid = try threads.alloc(allocator, .{
         ._refcount = 1,
-        .cpu_id = null,
-        .thrd_id = tid,
+        .thrd_id = undefined,
         .proc = proc,
         .sp = hal.context.init(stack, entry, true),
         .stack = stack,
-        .priority = options.priority,
-    };
-    proc.ref();
-    errdefer proc.unref();
+        .is_cpu_attached = .init(false),
+        .attached_cpu_id = .init(undefined),
+        .priority = .init(options.priority),
+    }, "thrd_id");
+    errdefer threads.free(allocator, tid) catch {};
+
     // log.debug(@src(), "created thread {}", .{tid});
-    try add(thrd);
+    try add(threads.get(tid).?);
 
     return tid;
 }
 
 // Schedule algorithm
-fn lessThan(_: void, a: ScheduleElem, b: ScheduleElem) std.math.Order {
-    return std.math.order(a.vcputime, b.vcputime);
-}
 const ScheduleElem = struct {
     thrd: *Thread,
     vcputime: u64,
 };
-const ScheduleQueue = std.PriorityQueue(ScheduleElem, void, lessThan);
-
-var sched_queue_lock: sync.SpinLockIrq = .unlocked;
-var sched_queue: std.ArrayList(ScheduleQueue) = .empty;
+fn lessThan(_: void, a: ScheduleElem, b: ScheduleElem) std.math.Order {
+    return std.math.order(a.vcputime, b.vcputime);
+}
+const ScheduleQueue = struct {
+    lock: sync.SpinLockIrq,
+    queue: std.PriorityQueue(ScheduleElem, void, lessThan),
+};
+var sched_queue: std.array_list.Aligned(ScheduleQueue, .fromByteUnits(hal.cpu.cache_line)) = .empty;
 var sched_time: u64 linksection(hal.cpu.per_cpu_section) = 0;
 var current_elem: ScheduleElem linksection(hal.cpu.per_cpu_section) = undefined;
 
 fn add(thrd: *Thread) !void {
-    const lock_flag = sched_queue_lock.lock();
-    defer sched_queue_lock.unlock(lock_flag);
-
-    const cpu_id = thrd.cpu_id orelse blk: {
+    const cpu_id = if (thrd.is_cpu_attached.load(.acquire))
+        thrd.attached_cpu_id.load(.acquire)
+    else blk: {
         var min_cpu_id: hal.cpu.CpuId = 0;
         var min_count: usize = std.math.maxInt(usize);
-        for (sched_queue.items, 0..) |cpu_sched_queue, i| {
-            if (min_count > cpu_sched_queue.count()) {
+        for (sched_queue.items, 0..) |*cpu_sched_queue, i| {
+            const lock_flag = cpu_sched_queue.lock.lock();
+            defer cpu_sched_queue.lock.unlock(lock_flag);
+
+            if (min_count > cpu_sched_queue.queue.count()) {
                 min_cpu_id = @intCast(i);
-                min_count = cpu_sched_queue.count();
+                min_count = cpu_sched_queue.queue.count();
             }
         }
         break :blk min_cpu_id;
     };
 
     const cpu_sched_queue = &sched_queue.items[cpu_id];
+    const lock_flag = cpu_sched_queue.lock.lock();
+    defer cpu_sched_queue.lock.unlock(lock_flag);
 
-    const vcputime = if (thrd.priority == priority.realtime) 0 else blk: {
-        var iter = cpu_sched_queue.iterator();
+    const vcputime = if (thrd.priority.load(.acquire) == priority.realtime) 0 else blk: {
+        var iter = cpu_sched_queue.queue.iterator();
         var total_vcputime: u64 = 0;
         var total_count: usize = 0;
         while (iter.next()) |elem| {
-            if (elem.thrd.priority == 0) continue;
+            if (elem.thrd.priority.load(.acquire) == 0) continue;
             total_vcputime += elem.vcputime;
             total_count += 1;
         }
@@ -169,11 +177,11 @@ fn add(thrd: *Thread) !void {
     };
 
     // log.debug(@src(), "add thread {} on cpu#{}, vcputime: {}", .{ thrd.thrd_id, cpu_id, vcputime });
-    thrd.ref();
-    try cpu_sched_queue.push(allocator, .{
+    try cpu_sched_queue.queue.push(allocator, .{
         .thrd = thrd,
         .vcputime = vcputime,
     });
+    thrd.ref();
 }
 
 var pending_unref: ?*Thread linksection(hal.cpu.per_cpu_section) = null;
@@ -184,21 +192,22 @@ pub fn schedule() void {
     }
 
     const local_cpu_id = hal.cpu.getLocalCpuId();
-    const lock_flag = sched_queue_lock.lock();
     const local_sched_queue = &sched_queue.items[local_cpu_id];
+    const lock_flag = local_sched_queue.lock.lock();
 
     const current_time = time.jiffies.getClock();
     var local_current_elem = hal.cpu.this_cpu.ptr(ScheduleElem, &current_elem);
     const original_current_elem = local_current_elem.*;
     // Update current_elem's vcputime
-    local_current_elem.vcputime += (current_time - hal.cpu.this_cpu.read(u64, &sched_time)) * local_current_elem.thrd.priority;
+    const diff_time = (current_time - hal.cpu.this_cpu.read(u64, &sched_time));
+    local_current_elem.vcputime += diff_time * local_current_elem.thrd.priority.load(.acquire);
     hal.cpu.this_cpu.write(u64, &sched_time, current_time);
-    local_sched_queue.update(original_current_elem, local_current_elem.*) catch unreachable;
+    local_sched_queue.queue.update(original_current_elem, local_current_elem.*) catch {};
     // log.debug(@src(), "thread {}: new vcputime {}", .{ local_current_elem.thrd.thrd_id, local_current_elem.vcputime });
     // Get next sched_elem
-    const next_elem = local_sched_queue.peek().?;
+    const next_elem = local_sched_queue.queue.peek().?;
     next_elem.thrd.ref();
-    sched_queue_lock.unlock(lock_flag);
+    local_sched_queue.lock.unlock(lock_flag);
 
     if (local_current_elem.thrd.thrd_id != next_elem.thrd.thrd_id) {
         if (local_current_elem.thrd.proc.proc_id != next_elem.thrd.proc.proc_id) {
@@ -216,5 +225,36 @@ pub fn schedule() void {
         hal.context.switchTo(&current_thrd.sp, next_elem.thrd.stack, next_elem.thrd.sp);
     } else {
         next_elem.thrd.unref();
+    }
+}
+
+pub inline fn getLocalCurrentThread() *Thread {
+    return hal.cpu.this_cpu.read(*Thread, &current_elem.thrd);
+}
+
+pub fn kill(tid: ThreadId) void {
+    const thrd = threads.get(tid).?;
+    thrd.unref();
+
+    // Remove thread from sched_queue
+    for (sched_queue.items) |*cpu_sched_queue| {
+        const lock_flag = cpu_sched_queue.lock.lock();
+        defer cpu_sched_queue.lock.unlock(lock_flag);
+
+        var iter = cpu_sched_queue.queue.iterator();
+        var index: usize = 0;
+        while (iter.next()) |elem| : (index += 1) {
+            if (elem.thrd.thrd_id == tid) {
+                _ = cpu_sched_queue.queue.popIndex(index);
+                elem.thrd.unref();
+                // If the killed tid is running, reschedule
+                // TODO: tell other cpu to reschedule
+                const local_current_elem = hal.cpu.this_cpu.ptr(ScheduleElem, &current_elem);
+                if (local_current_elem.thrd.thrd_id == tid) {
+                    root.sched.setRescheduleFlag();
+                }
+                return;
+            }
+        }
     }
 }

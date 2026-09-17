@@ -17,7 +17,7 @@ pub const SpinLockIrq = enum(u8) {
             .acquire,
             .monotonic,
         ) != null) {
-            hal.sync.spinHint();
+            hal.cpu.spinHint();
         }
         return flag;
     }

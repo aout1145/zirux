@@ -5,6 +5,9 @@ const assert = std.debug.assert;
 
 pub const cache_line = arch.cpu.cache_line;
 
+pub inline fn spinHint() void {
+    arch.cpu.spinHint();
+}
 pub inline fn endlessHalt() noreturn {
     arch.cpu.endlessHalt();
     unreachable;

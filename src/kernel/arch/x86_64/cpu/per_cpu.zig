@@ -22,7 +22,7 @@ pub inline fn init(gs_base: u64) void {
     arch.@"asm".writeMsr(arch.@"asm".registers.GsBase.msr, gs_base);
 }
 
-var gs_bases: std.array_list.Aligned(u64, .fromByteUnits(arch.cpu.cache_line)) = .empty;
+var gs_bases: std.ArrayList(u64) = .empty;
 var gs_bases_initalized: bool linksection(section) = false;
 pub fn initFull() !void {
     const lcpu_id = getLocalCpuId();

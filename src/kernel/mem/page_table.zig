@@ -55,42 +55,71 @@ pub const PageTablePtr = struct {
         };
     }
 
-    pub fn deinit(self: PageTablePtr) void {
-        _ = self;
-        @panic("TODO: deinit");
+    pub inline fn deinit(self: PageTablePtr, gpa: Allocator) void {
+        dfsFree(gpa, global_level, self.global_table);
+    }
+    fn dfsFree(
+        gpa: Allocator,
+        level: PageLevel,
+        table: *align(page_size) [entries_num]PTE,
+    ) void {
+        for (table) |hardware_entry| {
+            const entry = fromHardware(level, hardware_entry);
+            if (!entry.present or entry.type == .page) continue;
+            const lower_table: *align(page_size) [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
+            dfsFree(gpa, level.lower(), lower_table);
+        }
+        gpa.destroy(table);
     }
 
-    pub inline fn clone(self: PageTablePtr, gpa: Allocator) PagingError!PageTablePtr {
-        return .{ .global_table = try dfsClone(gpa, global_level, self.global_table) };
+    pub fn clone(self: PageTablePtr, gpa: Allocator) PagingError!PageTablePtr {
+        const result = dfsClone(gpa, global_level, self.global_table);
+        if (result[0]) |new_table| {
+            @branchHint(.likely);
+            if (result[1]) |err| {
+                @branchHint(.cold);
+                dfsFree(gpa, global_level, new_table);
+                return err;
+            } else {
+                @branchHint(.likely);
+                return .{ .global_table = new_table };
+            }
+        }
+        return result[1].?;
     }
+    /// Return value:
+    ///   .{ table, null}  : succeeded
+    ///   .{ table, error} : failed, caller free table
+    ///   .{ null, error}  : failed
     fn dfsClone(
         gpa: Allocator,
         level: PageLevel,
         table: *align(page_size) const [entries_num]PTE,
-    ) PagingError!*align(page_size) [entries_num]PTE {
-        const new_table = try allocatePage(gpa);
-        errdefer gpa.free(new_table);
-
-        // log.debug(@src(), "{any} {x}", .{ level, @intFromPtr(table) });
-        // for (table) |*hardware_entry| {
-        //     const entry = fromHardware(level, hardware_entry.*);
-        //     log.debug(@src(), "{any}", .{entry});
-        // }
-        @memcpy(new_table, table);
-        errdefer @panic("TODO: clean");
-        for (new_table) |*hardware_entry| {
-            var entry = fromHardware(level, hardware_entry.*);
+    ) struct { ?*align(page_size) [entries_num]PTE, ?PagingError } {
+        const new_table = allocatePage(gpa) catch |err| return .{ null, err };
+        for (table, new_table) |hardware_entry, *new_hardware_entry| {
+            var entry = fromHardware(level, hardware_entry);
             if (!entry.present) continue;
-            // log.debug(@src(), "{any}", .{entry});
-            if (entry.type == .table) {
-                const lower_table: *align(page_size) const [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
-                const new_lower_table = try dfsClone(gpa, level.lower(), lower_table);
-                entry.phys_addr = virt2phys(@intFromPtr(new_lower_table));
-                hardware_entry.* = toHardware(level, entry);
+            switch (entry.type) {
+                .table => {
+                    const lower_table: *align(page_size) const [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
+                    const result = dfsClone(gpa, level.lower(), lower_table);
+                    if (result[0]) |new_lower_table| {
+                        @branchHint(.likely);
+                        entry.phys_addr = virt2phys(@intFromPtr(new_lower_table));
+                        new_hardware_entry.* = toHardware(level, entry);
+                    }
+                    if (result[1]) |err| {
+                        @branchHint(.cold);
+                        return .{ new_table, err };
+                    }
+                },
+                .page => {
+                    new_hardware_entry.* = hardware_entry;
+                },
             }
         }
-
-        return new_table;
+        return .{ new_table, null };
     }
 
     pub fn map(
