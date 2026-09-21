@@ -47,6 +47,9 @@ fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     try arch.syscall.init();
     try arch.time.init();
 
+    // Initialize framebuffer
+    try root.drivers.framebuffer.uefi_gop.init(boot_info.framebuffer_info);
+
     log.info(@src(), "Initialized successfully.", .{});
 
     // Initialize other cpus

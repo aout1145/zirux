@@ -3,92 +3,48 @@ const root = @import("root");
 const log = root.debug.log;
 const assert = std.debug.assert;
 const hal = root.hal;
-const gpa = root.mem.general_allocator;
+const mem = root.mem;
+const allocator = mem.general_allocator;
+const utils = root.utils;
 
-const Area = struct {
-    node: std.DoublyLinkedList.Node,
-    /// Base virtual address
-    base: hal.page.VirtAddr,
-    /// Number of pages
-    len: usize,
-    /// Physical pages
-    pages: []hal.page.PageIndex,
-};
-var vmap_lock: root.sync.SpinLockIrq = .unlocked;
-var free_list: std.DoublyLinkedList = .{};
-var allocated_list: std.DoublyLinkedList = .{};
+var vmap_allocator: utils.VMapAllocator([]hal.page.PageIndex) = .init(.{
+    .base = hal.page.virtual_map_base,
+    .pages_num = @divExact(hal.page.virtual_map_size, hal.page.page_size),
+});
 
-pub const VMapError = error{
-    OutOfMemory,
-};
+pub fn ioMap(base: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePolicy) !*hal.io.IoMem {
+    const paddr_start = std.mem.alignBackward(hal.page.PhysAddr, base, hal.page.page_size);
+    const paddr_end = std.mem.alignForward(hal.page.PhysAddr, base + len, hal.page.page_size);
+    const pages_num = @divExact(paddr_end - paddr_start, hal.page.page_size);
 
-fn map(pages: []hal.page.PageIndex, attr: hal.page.PageAttribute) VMapError!hal.page.VirtAddr {
-    const vmap_flag = vmap_lock.lock();
-    defer vmap_lock.unlock(vmap_flag);
-
-    if (free_list.first == null and allocated_list.first == null) {
-        // Initialize.
-        const area = try gpa.create(Area);
-        area.base = hal.page.virtual_map_base;
-        area.len = hal.page.virtual_map_size / hal.page.page_size;
-        free_list.append(&area.node);
+    const pages = try allocator.alloc(hal.page.PageIndex, pages_num);
+    errdefer allocator.free(pages);
+    for (0..pages_num) |i| {
+        pages[i] = hal.page.addr2index(paddr_start + i * hal.page.page_size);
     }
 
-    if (free_list.first == null)
-        return VMapError.OutOfMemory;
+    const vbase = try vmap_allocator.alloc(allocator, pages_num, pages, null);
+    errdefer vmap_allocator.free(allocator, vbase) catch {};
 
-    var node = free_list.first.?;
-    while (true) {
-        const area: *Area = @fieldParentPtr("node", node);
-        if (pages.len <= area.len) {
-            errdefer @panic("TODO");
-            {
-                var kpt_flag: u8 = undefined;
-                const pt = root.mem.page_table.getKernelPageTable(&kpt_flag);
-                defer root.mem.page_table.releaseKernelPageTable(kpt_flag);
-                for (pages, 0..) |page_index, i| {
-                    try pt.map(
-                        gpa,
-                        .level1,
-                        area.base + i * hal.page.page_size,
-                        hal.page.index2addr(page_index),
-                        attr,
-                    );
-                }
-            }
-            {
-                if (pages.len < area.len) {
-                    const free_area = try gpa.create(Area);
-                    free_area.base = area.base + pages.len * hal.page.page_size;
-                    free_area.len = area.len - pages.len;
-                    free_list.append(&free_area.node);
-                }
-                area.len = pages.len;
-                area.pages = pages;
-                free_list.remove(&area.node);
-                allocated_list.append(&area.node);
-            }
-            return area.base;
+    var lock_flag: u8 = undefined;
+    const pt = mem.page_table.getKernelPageTable(&lock_flag);
+    defer mem.page_table.releaseKernelPageTable(lock_flag);
+    errdefer for (0..pages_num) |i| {
+        const vaddr = vbase + i * hal.page.page_size;
+        if (pt.query(vaddr)) |_| {
+            pt.unmap(allocator, vaddr) catch {};
         }
-
-        node = node.next orelse break;
+    };
+    for (0..pages_num) |i| {
+        const vaddr = vbase + i * hal.page.page_size;
+        const paddr = paddr_start + i * hal.page.page_size;
+        try pt.map(allocator, .level1, vaddr, paddr, .{
+            .writable = true,
+            .executable = false,
+            .userspace = false,
+            .global = true,
+            .cache_policy = cache_policy,
+        });
     }
-    return VMapError.OutOfMemory;
-}
-
-pub fn ioMap(addr: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePolicy) VMapError!*hal.io.IoMem {
-    const index_start: hal.page.PageIndex = @intCast(addr / hal.page.page_size);
-    const index_end: hal.page.PageIndex = @intCast((addr + len + hal.page.page_size - 1) / hal.page.page_size);
-    const pages = try gpa.alloc(hal.page.PageIndex, index_end - index_start);
-    for (pages, 0..) |*page_index, i| {
-        page_index.* = @intCast(index_start + i);
-    }
-    const vaddr = try map(pages, .{
-        .writable = true,
-        .executable = false,
-        .userspace = false,
-        .global = true,
-        .cache_policy = cache_policy,
-    });
-    return @ptrFromInt(vaddr + addr - hal.page.index2addr(index_start));
+    return @ptrFromInt(vbase + base - paddr_start);
 }

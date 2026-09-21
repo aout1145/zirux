@@ -17,7 +17,7 @@ pub const drivers = @import("drivers/drivers.zig");
 pub const time = @import("time/time.zig");
 pub const sched = @import("sched/sched.zig");
 pub const utils = @import("utils/utils.zig");
-pub const fs = @import("fs/vfs.zig");
+pub const fs = @import("fs/fs.zig");
 pub const syscall = @import("syscall/syscall.zig");
 
 // Kernel main

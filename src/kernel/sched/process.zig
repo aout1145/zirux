@@ -18,12 +18,12 @@ pub const Process = struct {
     proc_name: [8]u8,
     proc_id: ProcessId,
 
+    pages: utils.VMapAllocator(hal.page.PageAttribute),
+
     /// page_table, thrd_ids are non-thread-safe
     lock: sync.SpinLockIrq,
     page_table: mem.page_table.PageTablePtr,
     thrd_ids: std.ArrayList(thread.ThreadId),
-
-    pages: std.ArrayList(hal.page.PageIndex),
 
     pub inline fn ref(self: *Process) void {
         return sync.ref(u32, &self._refcount);
@@ -32,7 +32,19 @@ pub const Process = struct {
         if (sync.unref(u32, &self._refcount)) {
             assert(self.thrd_ids.items.len == 0);
             self.page_table.deinit(allocator);
-            // TODO: free pages
+
+            var iter = self.pages.iterator();
+            while (iter.next()) |area| {
+                for (0..area.pages_num) |i| {
+                    const page_index: hal.page.PageIndex = @intCast(hal.page.addr2index(area.base) + i);
+                    if (mem.page.getMeta(page_index).type.load(.acquire) == .user) {
+                        mem.buddy.unref(page_index);
+                    }
+                }
+            }
+            iter.deinit();
+            self.pages.deinit(allocator);
+
             processes.free(allocator, self.proc_id) catch {};
         }
     }
@@ -63,7 +75,10 @@ fn initIdleProc() !void {
             .lock = .unlocked,
             .page_table = mem.page_table.getKernelPageTableUnlocked(), // Directly use kernel page table
             .thrd_ids = .empty,
-            .pages = .empty,
+            .pages = .init(.{
+                .base = hal.page.user_base,
+                .pages_num = @divExact(hal.page.user_size, hal.page.page_size),
+            }),
         }, "proc_id");
         assert(idle_pid == 0);
 
@@ -106,10 +121,19 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
     errdefer pt.deinit(allocator);
 
     // log.debug(@src(), "1", .{});
-    var pages: std.ArrayList(hal.page.PageIndex) = .empty;
+    var pages: utils.VMapAllocator(hal.page.PageAttribute) = .init(.{
+        .base = hal.page.user_base,
+        .pages_num = @divExact(hal.page.user_size, hal.page.page_size),
+    });
     errdefer {
-        for (pages.items) |page_index| {
-            mem.buddy.unref(page_index);
+        var iter = pages.iterator();
+        while (iter.next()) |area| {
+            for (0..area.pages_num) |i| {
+                const page_index: hal.page.PageIndex = @intCast(hal.page.addr2index(area.base) + i);
+                if (mem.page.getMeta(page_index).type.load(.acquire) == .user) {
+                    mem.buddy.unref(page_index);
+                }
+            }
         }
         pages.deinit(allocator);
     }
@@ -126,11 +150,17 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
         assert(phdr.p_offset % hal.page.page_size == 0);
         assert(phdr.p_vaddr % hal.page.page_size == 0);
 
-        const page_count = (phdr.p_memsz + hal.page.page_size - 1) / hal.page.page_size;
-        try pages.ensureUnusedCapacity(allocator, page_count);
-        for (0..page_count) |i| {
+        const pages_num = (phdr.p_memsz + hal.page.page_size - 1) / hal.page.page_size;
+        const page_attr: hal.page.PageAttribute = .{
+            .userspace = true,
+            .global = false,
+            .executable = phdr.p_flags & std.elf.PF_X != 0,
+            .writable = phdr.p_flags & std.elf.PF_W != 0,
+            .cache_policy = .write_back,
+        };
+        _ = try pages.alloc(allocator, pages_num, page_attr, phdr.p_vaddr);
+        for (0..pages_num) |i| {
             const page_index = mem.buddy.alloc(0, .user) orelse return error.OutOfMemory;
-            pages.appendAssumeCapacity(page_index);
             const page: *[hal.page.page_size]u8 = @ptrFromInt(hal.page.index2addr(page_index) + hal.page.direct_map_base);
             @memset(page, 0);
             _ = try fs.read(file, phdr.p_offset + i * hal.page.page_size, page);
@@ -140,13 +170,7 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
                 .level1,
                 phdr.p_vaddr + i * hal.page.page_size,
                 hal.page.index2addr(page_index),
-                .{
-                    .userspace = true,
-                    .global = false,
-                    .executable = phdr.p_flags & std.elf.PF_X != 0,
-                    .writable = phdr.p_flags & std.elf.PF_W != 0,
-                    .cache_policy = .write_back,
-                },
+                page_attr,
             );
         }
     };

@@ -25,7 +25,7 @@ inline fn getBuddy(order: u8, index: PageIndex) ?PageIndex {
     const buddy_index = index ^ orderSize(order);
     if (order != max_order and buddy_index < max_page_index) {
         const buddy_meta = getMeta(buddy_index);
-        if (buddy_meta.atomicIsType(.buddy) and buddy_meta.compound.order == order) {
+        if (buddy_meta.type.load(.acquire) == .buddy and buddy_meta.compound.order == order) {
             return buddy_index;
         }
     }
@@ -46,8 +46,8 @@ pub fn add(start: PageIndex, num_of_pages: usize) void {
         while (true) : (order -= 1) {
             if (index % orderSize(order) == 0 and index + orderSize(order) <= start + num_of_pages) {
                 const meta = getMeta(index);
-                assert(meta.type == .unavailable);
-                meta.type = .buddy;
+                assert(meta.type.load(.acquire) == .unavailable);
+                meta.type.store(.buddy, .release);
                 addFreeList(order, index, true);
                 index += orderSize(order);
                 break;
@@ -62,7 +62,7 @@ fn addFreeList(order: u8, index: PageIndex, merge: bool) void {
     // log.debug(@src(), "add: 0x{x} (order {})", .{ index, order });
 
     const meta = getMeta(index);
-    assert(meta.type == .buddy);
+    assert(meta.type.load(.acquire) == .buddy);
     meta.compound = .{
         .order = order,
         .head = index,
@@ -96,7 +96,7 @@ fn addFreeList(order: u8, index: PageIndex, merge: bool) void {
     // Otherwise update tail pages
     for (1..orderSize(order)) |n| {
         const tail_meta = getMeta(@intCast(index + n));
-        tail_meta.type = .tail;
+        tail_meta.type.store(.tail, .release);
         tail_meta.compound = .{
             .order = order,
             .head = index,
@@ -106,7 +106,7 @@ fn addFreeList(order: u8, index: PageIndex, merge: bool) void {
 /// NOTE: Must acquire buddy_lock before call
 fn removeFreeList(index: PageIndex) void {
     const meta = getMeta(index);
-    assert(meta.type == .buddy);
+    assert(meta.type.load(.acquire) == .buddy);
     if (meta.list.next()) |next_index| {
         const next_meta = getMeta(next_index);
         next_meta.list.setPrev(meta.list.prev());
@@ -138,10 +138,10 @@ pub fn alloc(order: u8, @"type": PageType) ?PageIndex {
             removeFreeList(index);
             const left_index = index;
             const right_index = index ^ orderSize(current_order - 1);
-            assert(getMeta(left_index).type == .buddy);
+            assert(getMeta(left_index).type.load(.acquire) == .buddy);
             addFreeList(current_order - 1, left_index, false);
-            assert(getMeta(right_index).type == .tail);
-            getMeta(right_index).type = .buddy;
+            assert(getMeta(right_index).type.load(.acquire) == .tail);
+            getMeta(right_index).type.store(.buddy, .release);
             addFreeList(current_order - 1, right_index, false);
         }
     }
@@ -150,7 +150,7 @@ pub fn alloc(order: u8, @"type": PageType) ?PageIndex {
     removeFreeList(page_index);
 
     const meta = getMeta(page_index);
-    meta.type = @"type";
+    meta.type.store(@"type", .release);
     meta._refcount = 1;
     meta.list.setNext(null);
     meta.list.setPrev(null);
@@ -170,8 +170,8 @@ pub fn unref(page_index: PageIndex) void {
         defer buddy_lock.unlock(buddy_flag);
 
         const meta_flag = meta.lock();
-        assert(meta.type != .unavailable);
-        meta.type = .buddy;
+        assert(meta.type.load(.acquire) != .unavailable);
+        meta.type.store(.buddy, .release);
         meta.unlock(meta_flag);
         addFreeList(meta.compound.order, page_index, true);
     }

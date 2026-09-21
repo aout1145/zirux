@@ -5,6 +5,8 @@ pub const VirtAddr = u64;
 
 const gib = root.mem.gib;
 const tib = root.mem.tib;
+pub const user_base: usize = 0x0000000000000000;
+pub const user_size: usize = 128 * tib;
 pub const direct_map_base: usize = 0xFFFF880000000000;
 pub const direct_map_size: usize = 64 * tib;
 pub const virtual_map_base: usize = 0xFFFFC90000000000;

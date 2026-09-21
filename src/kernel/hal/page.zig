@@ -21,6 +21,9 @@ pub const page_meta_size: PhysAddr = arch_mem.page_meta_size;
 // Kernel text/data space
 pub const kernel_base: PhysAddr = arch_mem.kernel_base;
 pub const kernel_size: PhysAddr = arch_mem.kernel_size;
+// User space
+pub const user_base: PhysAddr = arch_mem.user_base;
+pub const user_size: PhysAddr = arch_mem.user_size;
 
 pub const page_size: comptime_int = arch_mem.page.page_size;
 pub const page_shift: comptime_int = arch_mem.page.page_shift;

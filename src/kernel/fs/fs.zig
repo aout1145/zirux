@@ -8,12 +8,15 @@ const sync = root.sync;
 const utils = root.utils;
 
 pub const init_fs = @import("init_fs.zig");
+pub const devfs = @import("devfs.zig");
 
 const init_cpu = 0;
 pub fn init() !void {
     if (hal.cpu.getLocalCpuId() == init_cpu) {
         const root_path = try allocator.dupe(u8, "/");
         try mount(root_path, init_fs.init());
+        const dev_path = try allocator.dupe(u8, "/dev/");
+        try mount(dev_path, devfs.init());
     }
 }
 
@@ -39,6 +42,8 @@ pub const FileSystem = struct {
 
         /// Return the length that actually read
         read: *const fn (self: *FileSystem, inode: INode, offset: usize, buffer: []u8) ReadError!usize,
+        /// Return the length that actually write
+        write: *const fn (self: *FileSystem, inode: INode, offset: usize, buffer: []const u8) WriteError!usize,
     };
     pub inline fn open(self: *FileSystem, path: []const u8, flags: OpenFlags) OpenError!INode {
         return self.vtable.open(self, path, flags);
@@ -49,11 +54,15 @@ pub const FileSystem = struct {
     pub inline fn read(self: *FileSystem, inode: INode, offset: usize, buffer: []u8) ReadError!usize {
         return self.vtable.read(self, inode, offset, buffer);
     }
+    pub inline fn write(self: *FileSystem, inode: INode, offset: usize, buffer: []const u8) WriteError!usize {
+        return self.vtable.write(self, inode, offset, buffer);
+    }
 };
 
 pub const File = struct {
     inode: INode,
     fs: *FileSystem,
+    flags: OpenFlags,
 };
 
 const MountPoint = struct {
@@ -99,6 +108,13 @@ pub const OpenFlags = packed struct(u64) {
     writable: bool = false,
     seekable: bool = false,
     _reserved: u62 = 0,
+
+    /// Check the provided flags included by self
+    pub fn include(self: OpenFlags, flags: OpenFlags) bool {
+        const self_u64: u64 = @bitCast(self);
+        const flags_u64: u64 = @bitCast(flags);
+        return flags_u64 & ~self_u64 == 0;
+    }
 };
 pub const OpenError = error{
     FileNotFound,
@@ -123,14 +139,14 @@ pub fn open(path: []const u8, flags: OpenFlags) OpenError!File {
     if (optional_fs) |fs| {
         const inode = try fs.open(path[prefix_len..], flags);
         fs.ref();
-        return .{ .inode = inode, .fs = fs };
+        return .{ .inode = inode, .fs = fs, .flags = flags };
     } else {
         return OpenError.FileNotFound;
     }
 }
 
 pub const CloseError = error{};
-pub fn close(file: *File) CloseError!void {
+pub inline fn close(file: *File) CloseError!void {
     const result = file.fs.close(file.inode);
     file.fs.unref();
     return result;
@@ -139,6 +155,16 @@ pub fn close(file: *File) CloseError!void {
 pub const ReadError = error{
     EndOfFile,
 };
-pub fn read(file: *File, offset: usize, buffer: []u8) ReadError!usize {
+pub inline fn read(file: *File, offset: usize, buffer: []u8) ReadError!usize {
     return file.fs.read(file.inode, offset, buffer);
+}
+
+pub const WriteError = error{
+    ReadOnly,
+    TooBig,
+};
+pub inline fn write(file: *File, offset: usize, buffer: []const u8) WriteError!usize {
+    if (!file.flags.writable)
+        return WriteError.ReadOnly;
+    return file.fs.write(file.inode, offset, buffer);
 }

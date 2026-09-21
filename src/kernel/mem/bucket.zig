@@ -115,10 +115,10 @@ fn free(bucket_index: u8, ptr: [*]u8) void {
     const paddr = @intFromPtr(ptr) - hal_page.direct_map_base;
     assert(paddr % bucket_size == 0);
     const meta_tail = page.getMeta(@truncate(paddr >> hal_page.page_shift));
-    assert(meta_tail.type == .bucket or meta_tail.type == .tail);
+    assert(meta_tail.type.load(.acquire) == .bucket or meta_tail.type.load(.acquire) == .tail);
     const page_index = meta_tail.compound.head;
     const meta = page.getMeta(page_index);
-    assert(meta.type == .bucket);
+    assert(meta.type.load(.acquire) == .bucket);
     const block_index: u15 = @intCast((paddr - hal_page.index2addr(page_index)) / bucket_size);
     assert((paddr - hal_page.index2addr(page_index)) % bucket_size == 0);
     const block_meta = getBlockMeta(page_index, bucket_size, block_index);
@@ -135,7 +135,7 @@ fn free(bucket_index: u8, ptr: [*]u8) void {
             meta.list.setPrev(null);
 
             const next_meta = page.getMeta(next_page_index);
-            assert(next_meta.type == .bucket);
+            assert(next_meta.type.load(.acquire) == .bucket);
             next_meta.list.setPrev(page_index);
         } else {
             bucket_list[bucket_index] = page_index;
@@ -191,7 +191,7 @@ inline fn bucketIndex(len: usize) ?u8 {
 
 inline fn order(len: usize) u8 {
     assert(len >= hal_page.page_size);
-    return @intCast(std.math.log2_int_ceil(usize, len >> hal_page.page_shift));
+    return @intCast(std.math.log2_int_ceil(usize, (len + hal_page.page_size - 1) / hal_page.page_size));
 }
 
 const DebugMeta = packed struct(usize) {
@@ -212,6 +212,7 @@ fn allocFunc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) 
             const meta_vaddr = hal_page.direct_map_base + hal_page.index2addr(page_index);
             const meta: *DebugMeta = @ptrFromInt(meta_vaddr);
             meta.* = .{ .len = @intCast(len) };
+            // log.debug(@src(), "{} {x}", .{ order(len), meta_vaddr });
             break :blk @ptrFromInt(meta_vaddr + buddy.orderSize(order(len)) * hal_page.page_size);
         } else return null;
         @memset(ptr[0..len], 0xAA);

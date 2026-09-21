@@ -204,6 +204,18 @@ pub const PageTablePtr = struct {
         }
     }
 
+    pub fn unmap(
+        self: PageTablePtr,
+        gpa: Allocator,
+        virt_addr: VirtAddr,
+    ) PagingError!void {
+        assert(virt_addr % page_size == 0);
+
+        _ = self;
+        _ = gpa;
+        @panic("TODO");
+    }
+
     pub const QueryResult = struct {
         level: PageLevel,
         entry: PageTableEntry,

@@ -15,7 +15,7 @@ fn deinit(_: *fs.FileSystem) void {
 }
 
 fn open(_: *fs.FileSystem, path: []const u8, flags: fs.OpenFlags) fs.OpenError!fs.INode {
-    if (flags.writable)
+    if (!supported_flags.include(flags))
         return fs.OpenError.UnsupportedFlag;
     if (!std.mem.eql(u8, "init", path))
         return fs.OpenError.FileNotFound;
@@ -34,7 +34,14 @@ fn read(_: *fs.FileSystem, inode: fs.INode, offset: usize, buffer: []u8) fs.Read
     @memcpy(buffer[0..copy_len], offset_file[0..copy_len]);
     return copy_len;
 }
+fn write(_: *fs.FileSystem, _: fs.INode, _: usize, _: []const u8) fs.WriteError!usize {
+    return fs.WriteError.ReadOnly;
+}
 
+const supported_flags: fs.OpenFlags = .{
+    .seekable = true,
+    .writable = false,
+};
 var init_fs: fs.FileSystem = .{
     ._refcount = 1,
     .vtable = &vtable,
@@ -44,4 +51,5 @@ const vtable: fs.FileSystem.VTable = .{
     .open = open,
     .close = close,
     .read = read,
+    .write = write,
 };
