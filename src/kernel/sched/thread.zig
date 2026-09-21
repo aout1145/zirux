@@ -74,7 +74,10 @@ pub fn init(idle_proc: *process.Process) !ThreadId {
         .attached_cpu_id = .init(hal.cpu.getLocalCpuId()),
         .priority = .init(0),
     }, "thrd_id");
-    const idle_thrd = threads.get(idle_tid).?;
+    // The idle thread is never freed, so the lock can be released right away.
+    var locked_idle_thrd = threads.get(idle_tid);
+    const idle_thrd = locked_idle_thrd.value orelse unreachable;
+    locked_idle_thrd.unlock();
 
     const idle_sched_elem: ScheduleElem = .{
         .thrd = idle_thrd,
@@ -121,7 +124,13 @@ pub fn createThread(proc: *process.Process, entry: hal.page.VirtAddr, options: O
     errdefer threads.free(allocator, tid) catch {};
 
     // log.debug(@src(), "created thread {}", .{tid});
-    try add(threads.get(tid).?);
+    // `tid` is not published yet and `add` only takes a reference, so holding
+    // the allocator lock across it is unnecessary (and would risk lock-order
+    // inversion with the scheduler queue lock).
+    var locked_thrd = threads.get(tid);
+    const thrd = locked_thrd.value orelse unreachable;
+    locked_thrd.unlock();
+    try add(thrd);
 
     return tid;
 }
@@ -233,7 +242,13 @@ pub inline fn getLocalCurrentThread() *Thread {
 }
 
 pub fn kill(tid: ThreadId) void {
-    const thrd = threads.get(tid).?;
+    // Take an extra reference while holding the lock so that `thrd` stays
+    // valid until we are done with it, then release before `unref` (which may
+    // free the thread and re-acquire the allocator lock).
+    var locked_thrd = threads.get(tid);
+    const thrd = locked_thrd.value orelse unreachable;
+    thrd.ref();
+    locked_thrd.unlock();
     thrd.unref();
 
     // Remove thread from sched_queue

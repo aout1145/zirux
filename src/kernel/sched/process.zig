@@ -89,7 +89,12 @@ fn initIdleProc() !void {
         hal.cpu.spinHint();
     }
 
-    const idle_proc = processes.get(0).?;
+    // The idle process is never freed, so release the allocator lock before
+    // taking the process lock (avoids lock-order inversion).
+    var locked_idle_proc = processes.get(0);
+    const idle_proc = locked_idle_proc.value orelse unreachable;
+    locked_idle_proc.unlock();
+
     const lock_flag = idle_proc.lock.lock();
     defer idle_proc.lock.unlock(lock_flag);
     try idle_proc.thrd_ids.append(allocator, try thread.init(idle_proc));
@@ -187,7 +192,12 @@ pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
     }, "proc_id");
     errdefer processes.free(allocator, pid) catch {};
 
-    const proc = processes.get(pid).?;
+    // `pid` is not published yet, so nobody else can free the process; release
+    // the allocator lock before taking the process lock.
+    var locked_proc = processes.get(pid);
+    const proc = locked_proc.value orelse unreachable;
+    locked_proc.unlock();
+
     const lock_flag = proc.lock.lock();
     defer proc.lock.unlock(lock_flag);
 
@@ -228,9 +238,14 @@ pub fn sysExit(args: []const usize) syscall.Result {
     _ = exit_value;
 
     const pid = thread.getLocalCurrentThread().proc.proc_id;
-    const proc = processes.get(pid).?;
 
+    // Take a reference while holding the allocator lock so `proc` cannot be
+    // freed by another cpu before we are done with it.
+    var locked_proc = processes.get(pid);
+    const proc = locked_proc.value orelse unreachable;
     proc.ref();
+    locked_proc.unlock();
+
     const lock_flag = proc.lock.lock();
     for (proc.thrd_ids.items) |tid| {
         thread.kill(tid);

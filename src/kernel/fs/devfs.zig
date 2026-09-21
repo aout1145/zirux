@@ -78,10 +78,18 @@ fn open(_: *fs.FileSystem, path: []const u8, flags: fs.OpenFlags) fs.OpenError!f
 }
 fn close(_: *fs.FileSystem, _: fs.INode) fs.CloseError!void {}
 fn read(_: *fs.FileSystem, inode: fs.INode, offset: usize, buffer: []u8) fs.ReadError!usize {
-    return devices.get(inode).?.device.read(offset, buffer);
+    // Device nodes are never freed after registration, so the lock can be
+    // released before performing the (potentially blocking) I/O.
+    var locked_node = devices.get(inode);
+    const node = locked_node.value orelse unreachable;
+    locked_node.unlock();
+    return node.device.read(offset, buffer);
 }
 fn write(_: *fs.FileSystem, inode: fs.INode, offset: usize, buffer: []const u8) fs.WriteError!usize {
-    return devices.get(inode).?.device.write(offset, buffer);
+    var locked_node = devices.get(inode);
+    const node = locked_node.value orelse unreachable;
+    locked_node.unlock();
+    return node.device.write(offset, buffer);
 }
 const vtable: fs.FileSystem.VTable = .{
     .deinit = deinit,

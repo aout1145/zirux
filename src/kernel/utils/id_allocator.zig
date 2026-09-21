@@ -47,10 +47,37 @@ pub fn IdAllocator(Id: type, Value: type) type {
             return id;
         }
 
-        pub fn get(self: *Self, id: Id) ?*Value {
+        /// Result of `get`: holds the allocator lock together with the value.
+        ///
+        /// The lock is held until `unlock` is called, which guarantees the
+        /// value cannot be freed by `free` while `value` is still in use
+        /// (avoiding use-after-free). While the lock is held the caller must
+        /// not call any other method of this allocator (`alloc`, `free`, `get`,
+        /// `iterator`), otherwise it would deadlock.
+        pub const LockedValue = struct {
+            /// The value associated with the requested id, or null if none is
+            /// allocated for it. Only valid until `unlock` is called.
+            value: ?*Value,
+            lock_flag: u8,
+            allocator: *Self,
+
+            /// Release the lock acquired by `get`. Must be called exactly once.
+            pub fn unlock(self: *LockedValue) void {
+                self.allocator.lock.unlock(self.lock_flag);
+            }
+        };
+
+        /// Get the value associated with `id`.
+        ///
+        /// The returned `LockedValue` keeps the allocator lock held; the caller
+        /// must call `unlock` on it once it is done using `value`.
+        pub fn get(self: *Self, id: Id) LockedValue {
             const lock_flag = self.lock.lock();
-            defer self.lock.unlock(lock_flag);
-            return self.value_map[id];
+            return .{
+                .value = self.value_map[id],
+                .lock_flag = lock_flag,
+                .allocator = self,
+            };
         }
 
         pub fn free(self: *Self, gpa: Allocator, id: Id) !void {
