@@ -39,7 +39,10 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
         .linkage = .static,
+        .use_llvm = true,
+        .use_lld = true,
     });
+    b.installArtifact(exe_init);
 
     const kernel_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,

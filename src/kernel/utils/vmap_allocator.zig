@@ -66,7 +66,9 @@ pub fn VMapAllocator(Data: type) type {
             if (vaddr) |base| {
                 assert(base % hal.page.page_size == 0);
                 for (self.free_list.items, 0..) |*free_area, i| {
-                    if (free_area.base <= base and free_area.pages_num >= pages_num) {
+                    if (free_area.base <= base and
+                        free_area.base + free_area.pages_num * hal.page.page_size >= base + pages_num * hal.page.page_size)
+                    {
                         self.allocated_list.appendAssumeCapacity(.{
                             .base = base,
                             .pages_num = pages_num,

@@ -67,6 +67,7 @@ fn open(_: *fs.FileSystem, path: []const u8, flags: fs.OpenFlags) fs.OpenError!f
     var iter = devices.iterator();
     defer iter.deinit();
     while (iter.next()) |node| {
+        // TODO: compare device number
         if (std.mem.eql(u8, node.name, path)) {
             if (!node.device.supported_flags.include(flags)) {
                 return fs.OpenError.UnsupportedFlag;

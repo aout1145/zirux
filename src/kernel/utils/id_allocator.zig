@@ -59,11 +59,11 @@ pub fn IdAllocator(Id: type, Value: type) type {
             /// allocated for it. Only valid until `unlock` is called.
             value: ?*Value,
             lock_flag: u8,
-            allocator: *Self,
+            self: *Self,
 
             /// Release the lock acquired by `get`. Must be called exactly once.
-            pub fn unlock(self: *LockedValue) void {
-                self.allocator.lock.unlock(self.lock_flag);
+            pub fn unlock(self: *const LockedValue) void {
+                self.self.lock.unlock(self.lock_flag);
             }
         };
 
@@ -74,9 +74,9 @@ pub fn IdAllocator(Id: type, Value: type) type {
         pub fn get(self: *Self, id: Id) LockedValue {
             const lock_flag = self.lock.lock();
             return .{
-                .value = self.value_map[id],
+                .value = if (id < self.value_map.len) self.value_map[id] else null,
                 .lock_flag = lock_flag,
-                .allocator = self,
+                .self = self,
             };
         }
 

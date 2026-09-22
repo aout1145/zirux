@@ -315,6 +315,7 @@ fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
     asm volatile ("cli");
     switch (Vector.fromNumber(ctx.vector).type()) {
         .abort, .fault, .reserved => {
+            arch.debug.setPanicFlag();
             log.err(@src(), "============ Oops! ===================", .{});
             log.err(@src(), "Unhandled exception: {s} ({})", .{ Vector.fromNumber(ctx.vector).name(), ctx.vector });
             log.err(@src(), "Error Code: 0x{X}", .{ctx.error_code});
@@ -326,7 +327,7 @@ fn unhandledHandler(ctx: *arch.cpu.context.Context) void {
         },
         .trap => {
             log.debug(@src(), "Unhandled trap: {s} ({})", .{ Vector.fromNumber(ctx.vector).name(), ctx.vector });
-            log.debug(@src(), "{f}", .{ctx});
+            // log.debug(@src(), "{f}", .{ctx});
         },
         .interrupt => {
             // Check if kernel panicked
@@ -351,7 +352,7 @@ pub fn init(gpa: std.mem.Allocator) !void {
     const intr_stack = try gpa.alignedAlloc(
         u8,
         .fromByteUnits(arch.mem.page.page_size),
-        8 * arch.mem.page.page_size,
+        4 * arch.mem.page.page_size,
     );
     const local_intr_sp = @intFromPtr(intr_stack.ptr) + intr_stack.len - 8;
     arch.cpu.per_cpu.write(u64, &intr_sp, local_intr_sp);

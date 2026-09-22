@@ -12,9 +12,13 @@ pub fn init() void {
 }
 
 pub inline fn println(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype) void {
-    const flag = print_lock.lock();
-    defer print_lock.unlock(flag);
-    printlnUnlocked(prefix, fmt, args);
+    if (panic_flag.load(.acquire)) {
+        printlnUnlocked(prefix, fmt, args);
+    } else {
+        const flag = print_lock.lock();
+        defer print_lock.unlock(flag);
+        printlnUnlocked(prefix, fmt, args);
+    }
 }
 
 fn printlnUnlocked(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype) void {
@@ -31,6 +35,9 @@ fn printlnUnlocked(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype)
 }
 
 pub var panic_flag: std.atomic.Value(bool) = .init(false);
+pub inline fn setPanicFlag() void {
+    panic_flag.store(true, .release);
+}
 pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     asm volatile ("cli");
     panic_flag.store(true, .release);
@@ -38,7 +45,7 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
 
     arch.intr.ipi.sendRaw(0, 0, .others, .nmi);
 
-    printlnUnlocked(null, "KERNEL PANIC on CPU#{} : {s}", .{ arch.cpu.per_cpu.getLocalCpuId(), msg });
+    printlnUnlocked(null, "\nKERNEL PANIC on CPU#{} : {s}", .{ arch.cpu.per_cpu.getLocalCpuId(), msg });
 
     var buffer: [256]usize = undefined;
     const trace = std.debug.captureCurrentStackTrace(.{

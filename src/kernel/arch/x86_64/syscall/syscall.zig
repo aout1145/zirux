@@ -54,60 +54,77 @@ fn syscallEntry() callconv(.naked) void {
         \\swapgs
         \\movq %%rsp, %%gs:user_rsp
         \\movq %%gs:kernel_rsp, %%rsp
-        \\pushq %%gs:user_rsp
         // Save context
-        \\pushq %%rcx
+        // rip in %rcx, rflags in %r11
+        \\pushq %[user_ss]
+        \\pushq %%gs:user_rsp
         \\pushq %%r11
+        \\pushq %[user_cs]
+        \\pushq %%rcx
+        \\pushq $0
+        \\pushq $0xFF
         \\
+        \\pushq %%rax
         \\pushq %%rbx
+        \\pushq %%rcx
+        \\pushq %%rdx
+        \\pushq %%rsi
+        \\pushq %%rdi
         \\pushq %%rbp
+        \\pushq %%r8
+        \\pushq %%r9
+        \\pushq %%r10
+        \\pushq %%r11
         \\pushq %%r12
         \\pushq %%r13
         \\pushq %%r14
         \\pushq %%r15
-        // Push argument registers
-        \\pushq %%r9
-        \\pushq %%r8
-        \\pushq %%r10
-        \\pushq %%rdx
-        \\pushq %%rsi
-        \\pushq %%rdi
-        \\pushq %%rax
         // Call syscallDispatch
         \\movq %%rsp, %%rdi
         \\sti
         \\call syscallDispatch
         \\cli
-        // Set return value
-        \\popq %%rax
-        \\addq $(6*8), %%rsp
+        // Try reschedule
+        \\call reschedule
         // Restore context
         \\popq %%r15
         \\popq %%r14
         \\popq %%r13
         \\popq %%r12
-        \\popq %%rbp
-        \\popq %%rbx
-        \\
         \\popq %%r11
+        \\popq %%r10
+        \\popq %%r9
+        \\popq %%r8
+        \\popq %%rbp
+        \\popq %%rdi
+        \\popq %%rsi
+        \\popq %%rdx
         \\popq %%rcx
-        // Switch to user stack and return
+        \\popq %%rbx
+        \\addq $0x08, %%rsp
+        \\
+        \\addq $0x10, %%rsp
+        \\popq %%rcx
+        \\addq $0x08, %%rsp
+        \\popq %%r11
         \\popq %%rsp
+        // Return
         \\swapgs
         \\sysretq
+        :
+        : [user_ss] "n" (arch.cpu.gdt.user_ds_selector),
+          [user_cs] "n" (arch.cpu.gdt.user_cs_selector),
     );
 }
-const Registers = extern struct {
-    rax: u64,
-    rdi: u64,
-    rsi: u64,
-    rdx: u64,
-    r10: u64,
-    r8: u64,
-    r9: u64,
-};
-export fn syscallDispatch(registers: *Registers) callconv(.c) void {
+export fn syscallDispatch(registers: *arch.cpu.context.Context) callconv(.c) void {
     if (dispatcher) |dispatchFunc| {
-        registers.rax = dispatchFunc(registers.rax, @ptrCast(&registers.rdi));
+        registers.rax = dispatchFunc(registers.rax, &.{
+            registers.rdi,
+            registers.rsi,
+            registers.rdx,
+            registers.r10,
+            registers.r8,
+            registers.r9,
+        });
     }
 }

@@ -7,7 +7,7 @@ const assert = std.debug.assert;
 
 const defs = @import("defs.zig");
 
-var kernel_stack: [2 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
+var kernel_stack: [4 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
 
 pub fn _start(_: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
     // Switch to stack in high address
