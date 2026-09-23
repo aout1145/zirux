@@ -117,6 +117,12 @@ pub inline fn toHardwarePTE(level: PageLevel, pte: PageTableEntry) HardwarePTE {
     return arch_mem.page.toHardwarePTE(level, pte);
 }
 
+/// Atomic read HardwarePTE and set present=false, then return perious value.
+/// It's to prevent MMU use the PTE during motifying.
+pub fn rmwHardwarePTE(pte: *HardwarePTE) HardwarePTE {
+    return arch_mem.page.rmwHardwarePTE(pte);
+}
+
 pub inline fn readPagingBase() PhysAddr {
     return arch_mem.page.readPagingBase();
 }

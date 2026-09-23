@@ -34,9 +34,6 @@ fn read(_: *fs.FileSystem, inode: fs.INode, offset: usize, buffer: []u8) fs.Read
     @memcpy(buffer[0..copy_len], offset_file[0..copy_len]);
     return copy_len;
 }
-fn write(_: *fs.FileSystem, _: fs.INode, _: usize, _: []const u8) fs.WriteError!usize {
-    return fs.WriteError.ReadOnly;
-}
 
 const supported_flags: fs.OpenFlags = .{
     .seekable = true,
@@ -51,5 +48,4 @@ const vtable: fs.FileSystem.VTable = .{
     .open = open,
     .close = close,
     .read = read,
-    .write = write,
 };

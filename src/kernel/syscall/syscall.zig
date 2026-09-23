@@ -20,9 +20,10 @@ pub const Result = enum(usize) {
     invalid_argument = 6,
     bad_file_id = 7,
     no_space_left = 8,
+    unknown_error = 9,
 };
 
-fn checkAddrAvailable(addr: hal.page.VirtAddr, len: usize) bool {
+fn checkAddrAvailable(addr: hal.page.VirtAddr, len: usize, writable: bool) bool {
     if (addr < hal.page.user_base or addr + len > hal.page.user_base + hal.page.user_size) {
         return false;
     }
@@ -36,22 +37,43 @@ fn checkAddrAvailable(addr: hal.page.VirtAddr, len: usize) bool {
         defer proc.lock.unlock(lock_flag);
 
         const pt = proc.page_table;
-        if (pt.query(addr_start + i * hal.page.page_size) == null) {
+        if (pt.query(addr_start + i * hal.page.page_size)) |result| {
+            if (writable) {
+                return result.entry.attribute.writable;
+            } else {
+                return true;
+            }
+        } else {
             return false;
         }
     }
 
     return true;
 }
-pub inline fn getUserPtr(T: type, addr: hal.page.VirtAddr) ?*T {
-    if (checkAddrAvailable(addr, @sizeOf(T))) {
+pub inline fn getUserPtr(T: type, addr: hal.page.VirtAddr) ?*const T {
+    if (checkAddrAvailable(addr, @sizeOf(T), false)) {
         return @ptrFromInt(addr);
     } else {
         return null;
     }
 }
-pub inline fn getUserSlice(T: type, addr: hal.page.VirtAddr, len: usize) ?[]T {
-    if (checkAddrAvailable(addr, len * @sizeOf(T))) {
+pub inline fn getUserMutablePtr(T: type, addr: hal.page.VirtAddr) ?*T {
+    if (checkAddrAvailable(addr, @sizeOf(T), true)) {
+        return @ptrFromInt(addr);
+    } else {
+        return null;
+    }
+}
+pub inline fn getUserSlice(T: type, addr: hal.page.VirtAddr, len: usize) ?[]const T {
+    if (checkAddrAvailable(addr, len * @sizeOf(T), false)) {
+        const ptr: [*]T = @ptrFromInt(addr);
+        return ptr[0..len];
+    } else {
+        return null;
+    }
+}
+pub inline fn getUserMutableSlice(T: type, addr: hal.page.VirtAddr, len: usize) ?[]T {
+    if (checkAddrAvailable(addr, len * @sizeOf(T), true)) {
         const ptr: [*]T = @ptrFromInt(addr);
         return ptr[0..len];
     } else {
@@ -72,6 +94,7 @@ var syscalls = [_]Handler{
     root.sched.process.sysOpen, // 2
     root.sched.process.sysRead, // 3
     root.sched.process.sysWrite, // 4
+    root.sched.process.sysControl, // 5
 };
 fn dispatch(number: usize, args: []const usize) usize {
     return if (number <= syscalls.len)

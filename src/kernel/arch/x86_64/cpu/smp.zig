@@ -73,7 +73,7 @@ fn apZigEntry() !void {
     arch.cpu.gdt.init();
 
     arch.mem.page.init();
-    const pt = mem.page_table.getKernelPageTableUnlocked();
+    const pt = mem.page_table.getKernelPageTable();
     hal.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
 
     try arch.cpu.per_cpu.initFull();

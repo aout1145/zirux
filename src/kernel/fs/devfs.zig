@@ -18,12 +18,16 @@ pub const DeviceOperations = struct {
         read: *const fn (self: *DeviceOperations, offset: usize, buffer: []u8) fs.ReadError!usize,
         /// Return the length that actually write
         write: *const fn (self: *DeviceOperations, offset: usize, buffer: []const u8) fs.WriteError!usize,
+        control: *const fn (self: *DeviceOperations, @"type": usize, buffer: []u8) fs.ControlError!usize,
     };
     pub inline fn read(self: *DeviceOperations, offset: usize, buffer: []u8) fs.ReadError!usize {
         return self.vtable.read(self, offset, buffer);
     }
     pub inline fn write(self: *DeviceOperations, offset: usize, buffer: []const u8) fs.WriteError!usize {
         return self.vtable.write(self, offset, buffer);
+    }
+    pub inline fn control(self: *DeviceOperations, @"type": usize, buffer: []u8) fs.ControlError!usize {
+        return self.vtable.control(self, @"type", buffer);
     }
 };
 
@@ -63,16 +67,30 @@ var devfs: fs.FileSystem = .{
 fn deinit(_: *fs.FileSystem) void {
     unreachable;
 }
+const Parsed = struct {
+    prefix: []const u8,
+    number: ?u32,
+};
+fn parseName(s: []const u8) Parsed {
+    var i: usize = s.len;
+    while (i > 0 and std.ascii.isDigit(s[i - 1])) : (i -= 1) {}
+    return .{
+        .prefix = s[0..i],
+        .number = if (i == s.len) null else std.fmt.parseInt(u32, s[i..], 10) catch unreachable,
+    };
+}
 fn open(_: *fs.FileSystem, path: []const u8, flags: fs.OpenFlags) fs.OpenError!fs.INode {
     var iter = devices.iterator();
     defer iter.deinit();
     while (iter.next()) |node| {
-        // TODO: compare device number
-        if (std.mem.eql(u8, node.name, path)) {
-            if (!node.device.supported_flags.include(flags)) {
-                return fs.OpenError.UnsupportedFlag;
+        const parsed = parseName(path);
+        if (parsed.number) |number| {
+            if (node.number == number and std.mem.eql(u8, node.name, parsed.prefix)) {
+                if (!node.device.supported_flags.include(flags)) {
+                    return fs.OpenError.UnsupportedFlag;
+                }
+                return node.inode;
             }
-            return node.inode;
         }
     }
     return fs.OpenError.FileNotFound;
@@ -92,10 +110,17 @@ fn write(_: *fs.FileSystem, inode: fs.INode, offset: usize, buffer: []const u8) 
     locked_node.unlock();
     return node.device.write(offset, buffer);
 }
+fn control(_: *fs.FileSystem, inode: fs.INode, @"type": usize, buffer: []u8) fs.ControlError!usize {
+    var locked_node = devices.get(inode);
+    const node = locked_node.value orelse unreachable;
+    locked_node.unlock();
+    return node.device.control(@"type", buffer);
+}
 const vtable: fs.FileSystem.VTable = .{
     .deinit = deinit,
     .open = open,
     .close = close,
     .read = read,
     .write = write,
+    .control = control,
 };

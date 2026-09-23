@@ -75,7 +75,7 @@ fn initIdleProc() !void {
             .proc_name = "IDLE".* ++ .{0} ** 4,
             .proc_id = undefined,
             .lock = .unlocked,
-            .page_table = mem.page_table.getKernelPageTableUnlocked(), // Directly use kernel page table
+            .page_table = mem.page_table.getKernelPageTable(),
             .thrd_ids = .empty,
             .pages = .init(.{
                 .base = hal.page.user_base,
@@ -121,10 +121,8 @@ pub const Options = struct {
 };
 pub fn createProcess(file: *fs.File, options: Options) !ProcessId {
     const pt = blk: {
-        var lock_flag: u8 = undefined;
-        const kernel_page_table = mem.page_table.getKernelPageTable(&lock_flag);
-        defer mem.page_table.releaseKernelPageTable(lock_flag);
-        break :blk try kernel_page_table.clone(allocator);
+        const kernel_page_table = mem.page_table.getKernelPageTable();
+        break :blk try kernel_page_table.shallowClone(allocator);
     };
     errdefer pt.deinit(allocator);
 
@@ -305,7 +303,7 @@ pub const SysMemFlags = packed struct(u64) {
 /// Args: [in]flags, [out]address
 pub fn sysMemMap(args: []const usize) syscall.Result {
     const flags: SysMemFlags = @bitCast(args[0]);
-    const addr = syscall.getUserPtr(hal.page.VirtAddr, args[1]) orelse return .bad_address;
+    const addr = syscall.getUserMutablePtr(hal.page.VirtAddr, args[1]) orelse return .bad_address;
 
     const proc = getLocalCurrentProcess();
     const attr: hal.page.PageAttribute = .{
@@ -320,13 +318,21 @@ pub fn sysMemMap(args: []const usize) syscall.Result {
     return .success;
 }
 
-/// Args: [in]path, [in]len, [in]flags, [out]file_id
+fn getFile(file_id: FileId) ?*fs.File {
+    const proc = getLocalCurrentProcess();
+    const locked_file = proc.files.get(file_id);
+    locked_file.unlock();
+    // TODO: fix potential uaf by using refcount
+    return locked_file.value;
+}
+
 pub const SysOpenFlags = fs.OpenFlags;
+/// Args: [in]path, [in]len, [in]flags, [out]file_id
 pub fn sysOpen(args: []const usize) syscall.Result {
     log.debug(@src(), "sysOpen", .{});
     const path = syscall.getUserSlice(u8, args[0], args[1]) orelse return .bad_address;
     const flags: SysOpenFlags = @bitCast(args[2]);
-    const file_id = syscall.getUserPtr(FileId, args[3]) orelse return .bad_address;
+    const file_id = syscall.getUserMutablePtr(FileId, args[3]) orelse return .bad_address;
 
     var file = fs.open(path, flags) catch |err| return switch (err) {
         error.FileNotFound => .file_not_found,
@@ -353,15 +359,10 @@ pub fn sysWrite(args: []const usize) syscall.Result {
     log.debug(@src(), "sysWrite", .{});
     const file_id = syscall.getUserInt(FileId, args[0]) orelse return .invalid_argument;
     const offset = args[1];
-    const len = syscall.getUserPtr(usize, args[3]) orelse return .bad_address;
+    const len = syscall.getUserMutablePtr(usize, args[3]) orelse return .bad_address;
     const buffer = syscall.getUserSlice(u8, args[2], len.*) orelse return .bad_address;
 
-    const proc = getLocalCurrentProcess();
-    const locked_file = proc.files.get(file_id);
-    locked_file.unlock();
-    // TODO: fix potential uaf
-
-    const file = locked_file.value orelse return .bad_file_id;
+    const file = getFile(file_id) orelse return .bad_file_id;
 
     len.* = fs.write(file, offset, buffer) catch |err| return switch (err) {
         error.ReadOnly => .operation_not_supported,
@@ -369,5 +370,22 @@ pub fn sysWrite(args: []const usize) syscall.Result {
     };
 
     log.debug(@src(), "sysWrite success", .{});
+    return .success;
+}
+
+pub fn sysControl(args: []const usize) syscall.Result {
+    log.debug(@src(), "sysControl", .{});
+    const file_id = syscall.getUserInt(FileId, args[0]) orelse return .invalid_argument;
+    const @"type" = args[1];
+    const len = syscall.getUserMutablePtr(usize, args[3]) orelse return .bad_address;
+    const buffer = syscall.getUserMutableSlice(u8, args[2], len.*) orelse return .bad_address;
+
+    const file = getFile(file_id) orelse return .bad_file_id;
+
+    len.* = fs.control(file, @"type", buffer) catch |err| return switch (err) {
+        error.InvalidOperation => .operation_not_supported,
+    };
+
+    log.debug(@src(), "sysControl success", .{});
     return .success;
 }

@@ -131,8 +131,7 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     // Construct full page table
     arch.mem.page.init();
     try mem.page_table.initKernelPageTable(mem.bootmm.allocator);
-    var lock_flag: u8 = undefined;
-    const pt = mem.page_table.getKernelPageTable(&lock_flag);
+    const pt = mem.page_table.getKernelPageTable();
     // 1. Kernel area
     try mapKernel(@intFromPtr(&__kernel_boot_trampoline_start), @intFromPtr(&__kernel_boot_trampoline_end), pt, .{
         .writable = false,
@@ -233,7 +232,6 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     boot_info.uefi_system_table_base = system_table_vaddr;
     // Finally, switch to new page table
     arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
-    mem.page_table.releaseKernelPageTable(lock_flag);
 
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();

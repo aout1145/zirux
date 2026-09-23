@@ -26,9 +26,7 @@ pub fn ioMap(base: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePo
     const vbase = try vmap_allocator.alloc(allocator, pages_num, pages, null);
     errdefer vmap_allocator.free(allocator, vbase) catch {};
 
-    var lock_flag: u8 = undefined;
-    const pt = mem.page_table.getKernelPageTable(&lock_flag);
-    defer mem.page_table.releaseKernelPageTable(lock_flag);
+    const pt = mem.page_table.getKernelPageTable();
     errdefer for (0..pages_num) |i| {
         const vaddr = vbase + i * hal.page.page_size;
         if (pt.query(vaddr)) |_| {

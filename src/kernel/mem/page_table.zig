@@ -3,20 +3,11 @@ const root = @import("root");
 const assert = std.debug.assert;
 const log = root.debug.log;
 
-var kernel_page_table_lock: root.sync.SpinLockIrq = .unlocked;
 var kernel_page_table: ?PageTablePtr = null;
-
 pub inline fn initKernelPageTable(gpa: std.mem.Allocator) !void {
     kernel_page_table = try .init(gpa);
 }
-pub inline fn getKernelPageTable(lock_flag: *u8) PageTablePtr {
-    lock_flag.* = kernel_page_table_lock.lock();
-    return kernel_page_table.?;
-}
-pub inline fn releaseKernelPageTable(lock_flag: u8) void {
-    kernel_page_table_lock.unlock(lock_flag);
-}
-pub inline fn getKernelPageTableUnlocked() PageTablePtr {
+pub inline fn getKernelPageTable() PageTablePtr {
     return kernel_page_table.?;
 }
 
@@ -28,6 +19,7 @@ pub const PagingError = error{
 };
 
 pub const PageTablePtr = struct {
+    const cpu = root.hal.cpu;
     const page = root.hal.page;
     const VirtAddr = page.VirtAddr;
     const PhysAddr = page.PhysAddr;
@@ -42,29 +34,44 @@ pub const PageTablePtr = struct {
     const fromHardware = page.fromHardwarePTE;
     const toHardware = page.toHardwarePTE;
     const flushTLB = page.flushTLB;
+    const SpinLockIrq = root.sync.SpinLockIrq;
+    const rmwPTE = page.rmwHardwarePTE;
 
     comptime {
         assert(entries_num * @sizeOf(PTE) == page_size);
     }
 
     global_table: *align(page_size) [entries_num]PTE,
+    lock: *SpinLockIrq,
+    cpus: std.ArrayList(cpu.CpuId), // TODO: TLB shootdown
 
     pub fn init(gpa: Allocator) PagingError!PageTablePtr {
+        const global_table = try allocatePage(gpa);
+        errdefer gpa.destroy(global_table);
+        const lock = try gpa.create(SpinLockIrq);
+        errdefer gpa.destroy(lock);
+        lock.* = .unlocked;
+
         return .{
-            .global_table = try allocatePage(gpa),
+            .global_table = global_table,
+            .lock = lock,
+            .cpus = .empty,
         };
     }
 
     pub inline fn deinit(self: PageTablePtr, gpa: Allocator) void {
+        _ = self.lock.lock();
         dfsFree(gpa, global_level, self.global_table);
+        gpa.destroy(self.lock);
     }
+    /// NOTE: Assume page table locked
     fn dfsFree(
         gpa: Allocator,
         level: PageLevel,
         table: *align(page_size) [entries_num]PTE,
     ) void {
-        for (table) |hardware_entry| {
-            const entry = fromHardware(level, hardware_entry);
+        for (table) |*hardware_entry| {
+            const entry = fromHardware(level, rmwPTE(hardware_entry));
             if (!entry.present or entry.type == .page) continue;
             const lower_table: *align(page_size) [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
             dfsFree(gpa, level.lower(), lower_table);
@@ -72,21 +79,41 @@ pub const PageTablePtr = struct {
         gpa.destroy(table);
     }
 
+    /// Clone entries of global_level only.
+    pub fn shallowClone(self: PageTablePtr, gpa: Allocator) PagingError!PageTablePtr {
+        const new_page_table: PageTablePtr = try .init(gpa);
+        errdefer new_page_table.deinit(gpa);
+        @memcpy(new_page_table.global_table, self.global_table);
+        return new_page_table;
+    }
+
     pub fn clone(self: PageTablePtr, gpa: Allocator) PagingError!PageTablePtr {
+        const lock_flag = self.lock.lock();
+        defer self.lock.unlock(lock_flag);
+
+        const new_lock = try gpa.create(SpinLockIrq);
+        errdefer gpa.destroy(new_lock);
+        new_lock.* = .unlocked;
+
         const result = dfsClone(gpa, global_level, self.global_table);
         if (result[0]) |new_table| {
             @branchHint(.likely);
             if (result[1]) |err| {
-                @branchHint(.cold);
+                @branchHint(.unlikely);
                 dfsFree(gpa, global_level, new_table);
                 return err;
             } else {
                 @branchHint(.likely);
-                return .{ .global_table = new_table };
+                return .{
+                    .global_table = new_table,
+                    .lock = new_lock,
+                    .cpus = .empty,
+                };
             }
         }
         return result[1].?;
     }
+    /// NOTE: Assume page table locked
     /// Return value:
     ///   .{ table, null}  : succeeded
     ///   .{ table, error} : failed, caller free table
@@ -100,24 +127,19 @@ pub const PageTablePtr = struct {
         for (table, new_table) |hardware_entry, *new_hardware_entry| {
             var entry = fromHardware(level, hardware_entry);
             if (!entry.present) continue;
-            switch (entry.type) {
-                .table => {
-                    const lower_table: *align(page_size) const [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
-                    const result = dfsClone(gpa, level.lower(), lower_table);
-                    if (result[0]) |new_lower_table| {
-                        @branchHint(.likely);
-                        entry.phys_addr = virt2phys(@intFromPtr(new_lower_table));
-                        new_hardware_entry.* = toHardware(level, entry);
-                    }
-                    if (result[1]) |err| {
-                        @branchHint(.cold);
-                        return .{ new_table, err };
-                    }
-                },
-                .page => {
-                    new_hardware_entry.* = hardware_entry;
-                },
+            if (entry.type == .table) {
+                const lower_table: *align(page_size) const [entries_num]PTE = @ptrFromInt(phys2virt(entry.phys_addr));
+                const result = dfsClone(gpa, level.lower(), lower_table);
+                if (result[0]) |new_lower_table| {
+                    @branchHint(.likely);
+                    entry.phys_addr = virt2phys(@intFromPtr(new_lower_table));
+                }
+                if (result[1]) |err| {
+                    @branchHint(.unlikely);
+                    return .{ new_table, err };
+                }
             }
+            new_hardware_entry.* = toHardware(level, entry);
         }
         return .{ new_table, null };
     }
@@ -130,6 +152,9 @@ pub const PageTablePtr = struct {
         phys_addr: PhysAddr,
         attr: PageAttribute,
     ) PagingError!void {
+        const lock_flag = self.lock.lock();
+        defer self.lock.unlock(lock_flag);
+
         assert(level.pageSize() != null);
         assert(virt_addr % level.pageSize().? == 0);
         assert(phys_addr % level.pageSize().? == 0);
@@ -162,12 +187,12 @@ pub const PageTablePtr = struct {
         if (entry.present) {
             return PagingError.AlreadyMapped;
         }
-        current_table[idx] = toHardware(current_level, .{
+        atomicWrite(&current_table[idx], toHardware(current_level, .{
             .present = true,
             .phys_addr = phys_addr,
             .type = .page,
             .attribute = attr,
-        });
+        }));
         flushTLB(virt_addr);
     }
 
@@ -209,9 +234,11 @@ pub const PageTablePtr = struct {
         gpa: Allocator,
         virt_addr: VirtAddr,
     ) PagingError!void {
+        const lock_flag = self.lock.lock();
+        defer self.lock.unlock(lock_flag);
+
         assert(virt_addr % page_size == 0);
 
-        _ = self;
         _ = gpa;
         @panic("TODO");
     }
@@ -221,6 +248,9 @@ pub const PageTablePtr = struct {
         entry: PageTableEntry,
     };
     pub fn query(self: PageTablePtr, virt_addr: VirtAddr) ?QueryResult {
+        const lock_flag = self.lock.lock();
+        defer self.lock.unlock(lock_flag);
+
         var current_table: *align(page_size) [entries_num]PTE = self.global_table;
         var current_level: PageLevel = global_level;
         while (true) : (current_level = current_level.lower()) {
@@ -242,6 +272,11 @@ pub const PageTablePtr = struct {
         return null;
     }
 
+    /// MMU never acquire lock.
+    /// So atomic release new value is necessary.
+    inline fn atomicWrite(pte: *PTE, val: PTE) void {
+        @atomicStore(PTE, pte, val, .release);
+    }
     inline fn virt2phys(virt_addr: VirtAddr) PhysAddr {
         assert(virt_addr >= page.direct_map_base);
         assert(virt_addr < page.direct_map_base + page.direct_map_size);

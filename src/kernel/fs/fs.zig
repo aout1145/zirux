@@ -43,7 +43,15 @@ pub const FileSystem = struct {
         /// Return the length that actually read
         read: *const fn (self: *FileSystem, inode: INode, offset: usize, buffer: []u8) ReadError!usize,
         /// Return the length that actually write
-        write: *const fn (self: *FileSystem, inode: INode, offset: usize, buffer: []const u8) WriteError!usize,
+        write: *const fn (self: *FileSystem, inode: INode, offset: usize, buffer: []const u8) WriteError!usize = noWrite,
+        control: *const fn (self: *FileSystem, inode: INode, @"type": usize, buffer: []u8) ControlError!usize = noControl,
+
+        fn noWrite(_: *FileSystem, _: INode, _: usize, _: []const u8) WriteError!usize {
+            return WriteError.ReadOnly;
+        }
+        fn noControl(_: *FileSystem, _: INode, _: usize, _: []u8) ControlError!usize {
+            return ControlError.InvalidOperation;
+        }
     };
     pub inline fn open(self: *FileSystem, path: []const u8, flags: OpenFlags) OpenError!INode {
         return self.vtable.open(self, path, flags);
@@ -56,6 +64,9 @@ pub const FileSystem = struct {
     }
     pub inline fn write(self: *FileSystem, inode: INode, offset: usize, buffer: []const u8) WriteError!usize {
         return self.vtable.write(self, inode, offset, buffer);
+    }
+    pub inline fn control(self: *FileSystem, inode: INode, @"type": usize, buffer: []u8) ControlError!usize {
+        return self.vtable.control(self, inode, @"type", buffer);
     }
 };
 
@@ -167,4 +178,11 @@ pub inline fn write(file: *File, offset: usize, buffer: []const u8) WriteError!u
     if (!file.flags.writable)
         return WriteError.ReadOnly;
     return file.fs.write(file.inode, offset, buffer);
+}
+
+pub const ControlError = error{
+    InvalidOperation,
+};
+pub inline fn control(file: *File, @"type": usize, buffer: []u8) ControlError!usize {
+    return file.fs.control(file.inode, @"type", buffer);
 }

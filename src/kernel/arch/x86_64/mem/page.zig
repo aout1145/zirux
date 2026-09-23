@@ -360,6 +360,10 @@ pub fn toHardwarePTE(level: hal.PageLevel, pte: hal.PageTableEntry) HardwarePTE 
     });
 }
 
+pub inline fn rmwHardwarePTE(pte: *HardwarePTE) HardwarePTE {
+    return @atomicRmw(HardwarePTE, pte, .Xchg, 0, .acq_rel);
+}
+
 pub inline fn readPagingBase() hal.PhysAddr {
     const cr3 = arch.@"asm".readCtrlRegister(arch.@"asm".registers.Cr3, "cr3");
     return @as(u64, cr3.phys) << page_shift;
@@ -371,6 +375,7 @@ pub inline fn writePagingBase(phys_addr: hal.PhysAddr) void {
     arch.@"asm".writeCtrlRegister("cr3", cr3);
 }
 pub inline fn flushTLB(virt_addr: hal.VirtAddr) void {
+    assert(virt_addr % page_size == 0);
     asm volatile (
         \\invlpg (%[virt])
         :

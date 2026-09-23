@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root");
 const fs = root.fs;
+const assert = std.debug.assert;
 
 pub const uefi_gop = @import("uefi_gop.zig");
 
@@ -24,7 +25,7 @@ pub const FrameBuffer = struct {
     }
 };
 
-pub const PixelFormat = enum {
+pub const PixelFormat = enum(u8) {
     /// red_green_blue_reserved_8_bit_per_color
     red_green_blue_reserved,
     /// blue_green_red_reserved_8_bit_per_color
@@ -49,7 +50,33 @@ fn write(device: *fs.devfs.DeviceOperations, offset: usize, buffer: []const u8) 
     @memcpy(offset_fb[0..copy_len], buffer[0..copy_len]);
     return copy_len;
 }
+fn control(device: *fs.devfs.DeviceOperations, @"type": usize, buffer: []u8) fs.ControlError!usize {
+    const control_type_get_info = 0;
+    const Info = extern struct {
+        width: u32,
+        height: u32,
+        pixels_per_scan_line: u32,
+        pixel_format: PixelFormat,
+    };
+
+    const fb: *FrameBuffer = @fieldParentPtr("interface", device);
+    switch (@"type") {
+        control_type_get_info => {
+            const info: Info = .{
+                .width = fb.width,
+                .height = fb.height,
+                .pixels_per_scan_line = fb.pixels_per_scan_line,
+                .pixel_format = fb.pixel_format,
+            };
+            const copy_len = @min(buffer.len, @sizeOf(Info));
+            @memcpy(buffer[0..copy_len], std.mem.asBytes(&info)[0..copy_len]);
+            return copy_len;
+        },
+        else => return fs.ControlError.InvalidOperation,
+    }
+}
 const vtable: fs.devfs.DeviceOperations.VTable = .{
     .read = read,
     .write = write,
+    .control = control,
 };
