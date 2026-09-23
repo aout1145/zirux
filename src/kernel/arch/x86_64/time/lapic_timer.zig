@@ -66,10 +66,40 @@ pub fn init() !void {
     defer intr.irqRestore(flag);
 
     const wait_us = 20_000; // 20ms
-    arch.cpu.per_cpu.write(u64, &bus_hz, try pit.calibrate(wait_us));
+    arch.cpu.per_cpu.write(u64, &bus_hz, try calibrate(wait_us));
 
     intr.isr.setHandler(timer_irq, timerHandler);
     setTimerDivide(timer_divide);
+}
+fn calibrate(wait_us: u32) !u64 {
+    setTimerDivide(.div1);
+    configureLvtTimer(0, .one_shot, true);
+
+    const large_count = 0xFFFFFFFF;
+    setInitialCount(large_count);
+
+    const clock_source = if (root.drivers.time.hpet.hpet) |*hpet| blk: {
+        break :blk hpet;
+    } else {
+        return error.ClockSourceUnavailable;
+    };
+    const start_count = clock_source.getCount();
+    const diff_count = clock_source.getHz() * wait_us / 1_000_000;
+    clock_source.setStatus(.running);
+    while (clock_source.getCount() - start_count < diff_count) {
+        @"asm".pause();
+    }
+    clock_source.setStatus(.stopped);
+
+    const current = getCurrentCount();
+    const elapsed = large_count - current;
+    if (elapsed == 0) return error.CalibrationFailed;
+
+    const ret_bus_hz = @as(u64, elapsed) * 1_000_000 / wait_us;
+    if (ret_bus_hz == 0) return error.CalibrationFailed;
+
+    setInitialCount(0);
+    return ret_bus_hz;
 }
 fn timerHandler(ctx: *arch.cpu.context.Context) void {
     const optional_handler = arch.cpu.per_cpu.read(?hal.time.TimerDevice.Handler, &apic_timer.handler);
@@ -97,55 +127,55 @@ inline fn getCurrentCount() u32 {
     return intr.apic.lapicRead(.current_cnt);
 }
 
-const pit = struct {
-    const freq = 1_193_182; // 1.193182 MHz
-    const port_data2 = 0x42;
-    const port_cmd = 0x43;
-    const port_61 = 0x61;
+// const pit = struct {
+//     const freq = 1_193_182; // 1.193182 MHz
+//     const port_data2 = 0x42;
+//     const port_cmd = 0x43;
+//     const port_61 = 0x61;
 
-    var pit_lock: root.sync.SpinLockIrq = .unlocked;
+//     var pit_lock: root.sync.SpinLockIrq = .unlocked;
 
-    fn delayUs(us: u32) !void {
-        const count = @as(u64, freq) * us / 1_000_000;
-        if (count > 0xFFFF) return error.DelayTooLong;
+//     fn delayUs(us: u32) !void {
+//         const count = @as(u64, freq) * us / 1_000_000;
+//         if (count > 0xFFFF) return error.DelayTooLong;
 
-        // Enable the channel 2 gate (bit 0), disable the speaker (bit 1).
-        io.outb((io.inb(port_61) & 0xFD) | 0x01, port_61);
+//         // Enable the channel 2 gate (bit 0), disable the speaker (bit 1).
+//         io.outb((io.inb(port_61) & 0xFD) | 0x01, port_61);
 
-        // channel 2, lobyte/hibyte, mode 0, binary
-        io.outb(0xB0, port_cmd);
-        io.outb(@truncate(count), port_data2);
-        io.outb(@truncate(count >> 8), port_data2);
+//         // channel 2, lobyte/hibyte, mode 0, binary
+//         io.outb(0xB0, port_cmd);
+//         io.outb(@truncate(count), port_data2);
+//         io.outb(@truncate(count >> 8), port_data2);
 
-        // Wait for channel 2 OUT (port 0x61 bit 5) to go high: terminal count.
-        while ((io.inb(port_61) & 0x20) == 0) {
-            @"asm".pause();
-        }
-    }
+//         // Wait for channel 2 OUT (port 0x61 bit 5) to go high: terminal count.
+//         while ((io.inb(port_61) & 0x20) == 0) {
+//             @"asm".pause();
+//         }
+//     }
 
-    fn calibrate(wait_us: u32) !u64 {
-        const lock_flag = pit_lock.lock();
-        defer pit_lock.unlock(lock_flag);
+//     fn calibrate(wait_us: u32) !u64 {
+//         const lock_flag = pit_lock.lock();
+//         defer pit_lock.unlock(lock_flag);
 
-        setTimerDivide(.div1);
-        configureLvtTimer(0, .one_shot, true);
+//         setTimerDivide(.div1);
+//         configureLvtTimer(0, .one_shot, true);
 
-        const large_count = 0xFFFFFFFF;
-        setInitialCount(large_count);
+//         const large_count = 0xFFFFFFFF;
+//         setInitialCount(large_count);
 
-        try delayUs(wait_us);
+//         try delayUs(wait_us);
 
-        const current = getCurrentCount();
-        const elapsed = large_count - current;
-        if (elapsed == 0) return error.CalibrationFailed;
+//         const current = getCurrentCount();
+//         const elapsed = large_count - current;
+//         if (elapsed == 0) return error.CalibrationFailed;
 
-        const ret_bus_hz = @as(u64, elapsed) * 1_000_000 / wait_us;
-        if (ret_bus_hz == 0) return error.CalibrationFailed;
+//         const ret_bus_hz = @as(u64, elapsed) * 1_000_000 / wait_us;
+//         if (ret_bus_hz == 0) return error.CalibrationFailed;
 
-        setInitialCount(0);
-        return ret_bus_hz;
-    }
-};
+//         setInitialCount(0);
+//         return ret_bus_hz;
+//     }
+// };
 
 const vtable: hal.time.TimerDevice.VTable = .{
     .setPeriodic = setPeriodic,

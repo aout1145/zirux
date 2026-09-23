@@ -9,8 +9,9 @@ const mem = root.mem;
 
 pub fn init() !void {
     const madt = acpi.xsdt.?.find(acpi.tables.MADT, "APIC") orelse return error.NotFound;
-    const vaddr = try mem.vmap.ioMap(madt.lapic_addr, hal.page.page_size, .uncacheable);
-    arch.cpu.per_cpu.write(*hal.io.IoMem, &lapic_base, vaddr);
+    const io_region = try mem.vmap.ioMap(madt.lapic_addr, hal.page.page_size, .uncacheable);
+    const local_lapic = arch.cpu.per_cpu.ptr(hal.io.IoRegion, &lapic_base);
+    local_lapic.* = io_region;
 
     var svr: SpuriousVectorRegister = @bitCast(lapicRead(.svr));
     svr.spurious_vector = 0xFF;
@@ -22,7 +23,7 @@ pub fn sendEoi() void {
     lapicWrite(.eoi, 0);
 }
 
-var lapic_base: *hal.io.IoMem linksection(arch.cpu.per_cpu.section) = undefined;
+var lapic_base: hal.io.IoRegion linksection(arch.cpu.per_cpu.section) = undefined;
 pub const LocalApicRegisters = enum(u32) {
     /// LAPIC ID Register
     id = 0x020,
@@ -46,12 +47,12 @@ pub const LocalApicRegisters = enum(u32) {
     // TODO: Add more
 };
 pub inline fn lapicRead(reg: LocalApicRegisters) u32 {
-    const base = arch.cpu.per_cpu.read(*hal.io.IoMem, &lapic_base);
-    return base.read(u32, @intFromEnum(reg));
+    const local_lapic = arch.cpu.per_cpu.ptr(hal.io.IoRegion, &lapic_base);
+    return local_lapic.read32(@intFromEnum(reg));
 }
 pub inline fn lapicWrite(reg: LocalApicRegisters, value: u32) void {
-    const base = arch.cpu.per_cpu.read(*hal.io.IoMem, &lapic_base);
-    base.write(u32, @intFromEnum(reg), value);
+    const local_lapic = arch.cpu.per_cpu.ptr(hal.io.IoRegion, &lapic_base);
+    local_lapic.write32(@intFromEnum(reg), value);
 }
 
 const SpuriousVectorRegister = packed struct(u32) {

@@ -8,12 +8,17 @@ const config: struct {
 
 fn println(comptime str: []const u8) void {
     const con_out = uefi.system_table.con_out.?;
-    _ = con_out.outputString(std.unicode.utf8ToUtf16LeStringLiteral(str ++ "\r\n")) catch {};
+    _ = con_out.outputString(utf16(str ++ "\r\n")) catch {};
 }
 
 pub fn main() uefi.Error!void {
-    println("loader: Booting...");
-    const header = loadKernel() catch return uefi.Error.Aborted;
+    println("loader: Starting...");
+    errdefer |e| switch (e) {
+        inline else => |err| {
+            @panic(@errorName(err));
+        },
+    };
+    const header = try loadKernel();
     try bootKernel(header);
 }
 
@@ -41,9 +46,18 @@ const ProgramHeaderIterator = struct {
 };
 
 fn loadKernel() !std.elf.Header {
-    // open file
+    println("loader: Loading " ++ config.kernel_path ++ "...");
     const bs = uefi.system_table.boot_services.?;
-    const fs = (try bs.locateProtocol(uefi.protocol.SimpleFileSystem, null)).?;
+
+    // open file
+    const loaded_image_protocol = (try bs.handleProtocol(
+        uefi.protocol.LoadedImage,
+        uefi.handle,
+    )).?;
+    const fs = (try bs.handleProtocol(
+        uefi.protocol.SimpleFileSystem,
+        loaded_image_protocol.device_handle.?,
+    )).?;
     const rootfs = try fs.openVolume();
     defer rootfs.close() catch {};
     const file = try rootfs.open(utf16(config.kernel_path), .read, .{});
@@ -97,6 +111,8 @@ fn bootKernel(header: std.elf.Header) !noreturn {
     const defs = @import("loader-defs");
     const bs = uefi.system_table.boot_services.?;
 
+    println("loader: Booting " ++ config.kernel_path ++ "...");
+
     const boot_info_buffer = try bs.allocatePool(.boot_services_data, @sizeOf(defs.BootInfo));
     const boot_info: *defs.BootInfo = @ptrCast(boot_info_buffer.ptr);
     boot_info.magic = defs.magic;
@@ -126,20 +142,24 @@ fn bootKernel(header: std.elf.Header) !noreturn {
         } else |_| {}
     }
 
-    // memory map
-    const map_info = try bs.getMemoryMapInfo();
-    const map_size = map_info.len * map_info.descriptor_size;
-    const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
-    const map = try bs.getMemoryMap(map_buffer);
-    boot_info.memory_map = .{
-        .base = @intFromPtr(map.ptr),
-        .len = map.info.len,
-        .descriptor_size = map.info.descriptor_size,
-        .descriptor_version = map.info.descriptor_version,
-    };
+    while (true) {
+        // memory map
+        const map_info = try bs.getMemoryMapInfo();
+        const map_size = (map_info.len + 2) * map_info.descriptor_size;
+        const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
+        const map = try bs.getMemoryMap(map_buffer);
+        boot_info.memory_map = .{
+            .base = @intFromPtr(map.ptr),
+            .len = map.info.len,
+            .descriptor_size = map.info.descriptor_size,
+            .descriptor_version = map.info.descriptor_version,
+        };
 
-    // exit boot services
-    try bs.exitBootServices(uefi.handle, map.info.key);
+        // exit boot services
+        if (bs.exitBootServices(uefi.handle, map.info.key)) {
+            break;
+        } else |_| {}
+    }
 
     // jump to kernel
     const EntryFunc = fn (*defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn;

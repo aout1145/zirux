@@ -18,23 +18,32 @@ pub fn init() !void {
 
 fn jiffiesHandler(ctx: *hal.context.Context, timer: *hal.time.TimerDevice) void {
     _ = jiffies_count.fetchAdd(1, .monotonic);
+    // log.debug(@src(), "{}", .{jiffies.getCount()});
     handler(ctx, timer);
 }
 fn handler(ctx: *hal.context.Context, timer: *hal.time.TimerDevice) void {
     _ = ctx;
     _ = timer;
     root.sched.setRescheduleFlag();
-    // log.debug(@src(), "{}", .{jiffies.getClock()});
 }
 
 const jiffies_vtable: hal.time.ClockSource.VTable = .{
+    .getStatus = getStatus,
+    .setStatus = setStatus,
     .getHz = getHz,
-    .getClock = getClock,
+    .getCount = getCount,
 };
+fn getStatus(_: *const hal.time.ClockSource) hal.time.ClockSource.Status {
+    return .running;
+}
+fn setStatus(_: *hal.time.ClockSource, status: hal.time.ClockSource.Status) void {
+    if (status == .stopped)
+        unreachable;
+}
 fn getHz(_: *const hal.time.ClockSource) u64 {
     return hz;
 }
-fn getClock(_: *const hal.time.ClockSource) u64 {
+fn getCount(_: *const hal.time.ClockSource) u64 {
     return jiffies_count.load(.monotonic);
 }
 pub const jiffies: hal.time.ClockSource = .{

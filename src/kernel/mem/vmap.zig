@@ -12,7 +12,7 @@ var vmap_allocator: utils.VMapAllocator([]hal.page.PageIndex) = .init(.{
     .pages_num = @divExact(hal.page.virtual_map_size, hal.page.page_size),
 });
 
-pub fn ioMap(base: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePolicy) !*hal.io.IoMem {
+pub fn ioMap(base: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePolicy) !hal.io.IoRegion {
     const paddr_start = std.mem.alignBackward(hal.page.PhysAddr, base, hal.page.page_size);
     const paddr_end = std.mem.alignForward(hal.page.PhysAddr, base + len, hal.page.page_size);
     const pages_num = @divExact(paddr_end - paddr_start, hal.page.page_size);
@@ -44,5 +44,5 @@ pub fn ioMap(base: hal.page.PhysAddr, len: usize, cache_policy: hal.page.CachePo
             .cache_policy = cache_policy,
         });
     }
-    return @ptrFromInt(vbase + base - paddr_start);
+    return hal.io.initMemMapIo(vbase + base - paddr_start, len);
 }

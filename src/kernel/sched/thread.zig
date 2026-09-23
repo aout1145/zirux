@@ -204,7 +204,7 @@ pub fn schedule() void {
     const local_sched_queue = &sched_queue.items[local_cpu_id];
     const lock_flag = local_sched_queue.lock.lock();
 
-    const current_time = time.jiffies.getClock();
+    const current_time = time.jiffies.getCount();
     var local_current_elem = hal.cpu.this_cpu.ptr(ScheduleElem, &current_elem);
     const original_current_elem = local_current_elem.*;
     // Update current_elem's vcputime

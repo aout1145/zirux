@@ -34,15 +34,27 @@ pub inline fn getTickDevice() *TimerDevice {
 pub const ClockSource = struct {
     vtable: *const VTable,
 
+    pub const Status = enum {
+        running,
+        stopped,
+    };
+    pub inline fn getStatus(self: *const ClockSource) Status {
+        return self.vtable.getStatus(self);
+    }
+    pub inline fn setStatus(self: *ClockSource, status: Status) void {
+        return self.vtable.setStatus(self, status);
+    }
     pub inline fn getHz(self: *const ClockSource) u64 {
         return self.vtable.getHz(self);
     }
-    pub inline fn getClock(self: *const ClockSource) u64 {
-        return self.vtable.getClock(self);
+    pub inline fn getCount(self: *const ClockSource) u64 {
+        return self.vtable.getCount(self);
     }
 
     pub const VTable = struct {
+        getStatus: *const fn (self: *const ClockSource) Status,
+        setStatus: *const fn (self: *ClockSource, status: Status) void,
         getHz: *const fn (self: *const ClockSource) u64,
-        getClock: *const fn (self: *const ClockSource) u64,
+        getCount: *const fn (self: *const ClockSource) u64,
     };
 };

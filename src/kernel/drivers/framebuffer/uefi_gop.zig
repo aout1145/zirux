@@ -6,11 +6,12 @@ const mem = root.mem;
 const allocator = root.mem.general_allocator;
 
 pub fn init(fb_info: arch.boot.defs.FrameBufferInfo) !void {
-    const buffer: [*]u8 = @ptrCast(try mem.vmap.ioMap(
+    const io_region = try mem.vmap.ioMap(
         fb_info.frame_buffer_base,
         fb_info.frame_buffer_size,
         .write_combining,
-    ));
+    );
+    const buffer: [*]u8 = @ptrFromInt(io_region.base);
 
     const framebuffer = try allocator.create(fb.FrameBuffer);
     framebuffer.* = .{
