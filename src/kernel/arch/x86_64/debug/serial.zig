@@ -43,7 +43,20 @@ const offsets = struct {
     pub const sr = 7;
 };
 
-pub fn init(port: Port, baud: u32, buffer: []u8) ?Writer {
+var com1: Writer = undefined;
+
+pub var writer: ?*std.Io.Writer = null;
+
+/// Bring up COM1 and publish its writer as the global debug sink.
+pub fn init() void {
+    com1 = initPort(.com1, 115200, &.{}) orelse {
+        writer = null;
+        return;
+    };
+    writer = &com1.interface;
+}
+
+fn initPort(port: Port, baud: u32, buffer: []u8) ?Writer {
     const p = @intFromEnum(port);
 
     io.outb(0, p + offsets.ier); // Disable interrupts
@@ -69,7 +82,6 @@ pub fn init(port: Port, baud: u32, buffer: []u8) ?Writer {
 
     return .{
         .port = port,
-        .prefix = null,
         .interface = .{
             .buffer = buffer,
             .vtable = &Writer.vtable,
@@ -87,21 +99,13 @@ fn write(byte: u8, port: Port) void {
     io.outb(byte, p);
 }
 
-pub const Writer = struct {
+const Writer = struct {
     port: Port,
-    prefix: ?[]const u8,
     interface: std.Io.Writer,
 
     fn writeStr(self: *const Writer, str: []const u8) void {
         for (str) |byte| {
             write(byte, self.port);
-            if (byte == '\n') {
-                if (self.prefix) |pre| {
-                    for (pre) |prebyte| {
-                        write(prebyte, self.port);
-                    }
-                }
-            }
         }
     }
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {

@@ -30,7 +30,7 @@ export fn kernelEntry2(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{}
 fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     // Now we enable basic kernel address space!
     arch.cpu.init();
-    arch.debug.init();
+    arch.debug.serial.init();
     log.info(@src(), "Booting...", .{});
     if (boot_info_ptr.magic != defs.magic) {
         return error.InvalidMagic;
@@ -42,26 +42,22 @@ fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
     try initMem(&boot_info);
     const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
     try root.drivers.acpi.initFromUefiSystemTable(system_table);
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 
     // Initialize other devices and subsystems
     try arch.cpu.per_cpu.initFull();
-    root.arch.x86_64.debug.markFb(0);
     try root.drivers.time.hpet.init();
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     try arch.intr.init();
-    root.arch.x86_64.debug.markFb(0);
     try arch.syscall.init();
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     try arch.time.init();
-    root.arch.x86_64.debug.markFb(0);
     try root.drivers.framebuffer.uefi_gop.init(boot_info.framebuffer_info);
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 
     log.info(@src(), "Initialized successfully.", .{});
 
     // Initialize other cpus
     try arch.cpu.smp.init();
+
+    // Hand the framebuffer over to user space.
+    arch.debug.framebuffer.disable();
 
     try root.kernelMain();
 
@@ -139,42 +135,42 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     try mem.page_table.initKernelPageTable(mem.bootmm.allocator);
     const pt = mem.page_table.getKernelPageTable();
     // 1. Kernel area
-    try mapKernel(@intFromPtr(&__kernel_boot_trampoline_start), @intFromPtr(&__kernel_boot_trampoline_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_boot_trampoline_start), @intFromPtr(__kernel_boot_trampoline_end), pt, .{
         .writable = false,
         .executable = false,
         .userspace = false,
         .global = true,
         .cache_policy = .write_back,
     });
-    try mapKernel(@intFromPtr(&__kernel_per_cpu_start), @intFromPtr(&__kernel_per_cpu_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_per_cpu_start), @intFromPtr(__kernel_per_cpu_end), pt, .{
         .writable = false,
         .executable = false,
         .userspace = false,
         .global = true,
         .cache_policy = .write_back,
     });
-    try mapKernel(@intFromPtr(&__kernel_text_start), @intFromPtr(&__kernel_text_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_text_start), @intFromPtr(__kernel_text_end), pt, .{
         .writable = false,
         .executable = true,
         .userspace = false,
         .global = true,
         .cache_policy = .write_back,
     });
-    try mapKernel(@intFromPtr(&__kernel_rodata_start), @intFromPtr(&__kernel_rodata_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_rodata_start), @intFromPtr(__kernel_rodata_end), pt, .{
         .writable = false,
         .executable = false,
         .userspace = false,
         .global = true,
         .cache_policy = .write_back,
     });
-    try mapKernel(@intFromPtr(&__kernel_data_start), @intFromPtr(&__kernel_data_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_data_start), @intFromPtr(__kernel_data_end), pt, .{
         .writable = true,
         .executable = false,
         .userspace = false,
         .global = true,
         .cache_policy = .write_back,
     });
-    try mapKernel(@intFromPtr(&__kernel_bss_start), @intFromPtr(&__kernel_bss_end), pt, .{
+    try mapKernel(@intFromPtr(__kernel_bss_start), @intFromPtr(__kernel_bss_end), pt, .{
         .writable = true,
         .executable = false,
         .userspace = false,
@@ -242,25 +238,27 @@ fn initMem(boot_info: *defs.BootInfo) !void {
     if (fbi.available) {
         const paddr = fbi.frame_buffer_base;
         const bytes = std.mem.alignForward(usize, fbi.frame_buffer_size, arch.mem.page.page_size);
-        pt.mapRange(
+        try pt.mapRange(
             mem.bootmm.allocator,
             arch.mem.direct_map_base + paddr,
             paddr,
             bytes / arch.mem.page.page_size,
             .{ .writable = true, .executable = false, .userspace = false, .global = true, .cache_policy = .uncacheable },
-        ) catch |e| log.info(@src(), "fb map err {s}", .{@errorName(e)});
-        arch.debug.initFb(arch.mem.direct_map_base + paddr, fbi.frame_buffer_size / 4);
-        root.arch.x86_64.debug.markFb(0);
+        );
+        arch.debug.framebuffer.init(
+            arch.mem.direct_map_base + paddr,
+            fbi.horizontal_resolution,
+            fbi.vertical_resolution,
+            fbi.pixels_per_scan_line,
+        );
     }
 
     // Finally, switch to new page table
     arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
 
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();
 
-    root.arch.x86_64.debug.markFb(0);
     // After that, we enable full memory space!
 }
 
@@ -271,15 +269,15 @@ fn mapKernel(start: u64, end: u64, pt: mem.page_table.PageTablePtr, attr: root.h
     try mem.bootmm.reserve(phys_addr, end - start);
     try pt.mapRange(mem.bootmm.allocator, virt_addr, phys_addr, page_num, attr);
 }
-extern const __kernel_boot_trampoline_start: [*]const u8;
-extern const __kernel_boot_trampoline_end: [*]const u8;
-extern const __kernel_per_cpu_start: [*]const u8;
-extern const __kernel_per_cpu_end: [*]const u8;
-extern const __kernel_text_start: [*]const u8;
-extern const __kernel_text_end: [*]const u8;
-extern const __kernel_rodata_start: [*]const u8;
-extern const __kernel_rodata_end: [*]const u8;
-extern const __kernel_data_start: [*]const u8;
-extern const __kernel_data_end: [*]const u8;
-extern const __kernel_bss_start: [*]const u8;
-extern const __kernel_bss_end: [*]const u8;
+const __kernel_boot_trampoline_start = @extern(*const u8, .{ .name = "__kernel_boot_trampoline_start", .visibility = .hidden });
+const __kernel_boot_trampoline_end = @extern(*const u8, .{ .name = "__kernel_boot_trampoline_end", .visibility = .hidden });
+const __kernel_per_cpu_start = @extern(*const u8, .{ .name = "__kernel_per_cpu_start", .visibility = .hidden });
+const __kernel_per_cpu_end = @extern(*const u8, .{ .name = "__kernel_per_cpu_end", .visibility = .hidden });
+const __kernel_text_start = @extern(*const u8, .{ .name = "__kernel_text_start", .visibility = .hidden });
+const __kernel_text_end = @extern(*const u8, .{ .name = "__kernel_text_end", .visibility = .hidden });
+const __kernel_rodata_start = @extern(*const u8, .{ .name = "__kernel_rodata_start", .visibility = .hidden });
+const __kernel_rodata_end = @extern(*const u8, .{ .name = "__kernel_rodata_end", .visibility = .hidden });
+const __kernel_data_start = @extern(*const u8, .{ .name = "__kernel_data_start", .visibility = .hidden });
+const __kernel_data_end = @extern(*const u8, .{ .name = "__kernel_data_end", .visibility = .hidden });
+const __kernel_bss_start = @extern(*const u8, .{ .name = "__kernel_bss_start", .visibility = .hidden });
+const __kernel_bss_end = @extern(*const u8, .{ .name = "__kernel_bss_end", .visibility = .hidden });

@@ -64,17 +64,14 @@ pub fn switchToBuddy() void {
         max_paddr = @max(max_paddr, region.base + region.len);
     }
     buddy.init(@intCast(max_paddr / hal_page.page_size));
-    root.arch.x86_64.debug.markFb(0);
 
     // Use rawFree to prevent zig from filling the released memory with 0xAA
     if (memory.len != init_regions_count) {
         allocator.rawFree(@ptrCast(memory), .fromByteUnits(requested_align), 0);
     }
-    root.arch.x86_64.debug.markFb(0x0000FF00);
     // if (reserved.len != init_regions_count) {
     //     allocator.rawFree(@ptrCast(reserved), .fromByteUnits(requested_align), 0);
     // }
-    root.arch.x86_64.debug.markFb(0x00FF0000);
 
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable and region.type != .no_alloc) continue;
@@ -111,7 +108,6 @@ pub fn switchToBuddy() void {
             base = free_end;
         }
     }
-    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 }
 
 /// Map all memory into direct mapping area

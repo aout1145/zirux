@@ -9,8 +9,8 @@ const mem = root.mem;
 const ipi = arch.intr.ipi;
 
 pub var cpu_list: std.ArrayList(hal.cpu.Cpu) = .empty;
+pub var all_finished: std.atomic.Value(bool) = .init(false);
 var is_finished: std.atomic.Value(bool) = .init(true);
-var all_finished: std.atomic.Value(bool) = .init(false);
 
 pub fn init() !void {
     const madt = acpi.xsdt.?.find(acpi.tables.MADT, "APIC").?;
@@ -28,15 +28,13 @@ pub fn init() !void {
             .id = lapic.apic_id,
         });
     }
-    root.arch.x86_64.debug.markFb(0);
 
-    const ap_trampoline_len = @intFromPtr(&__kernel_boot_trampoline_end) - @intFromPtr(&__kernel_boot_trampoline_start);
-    const ap_trampoline_source_ptr: [*]const u8 = @ptrCast(&__kernel_boot_trampoline_start);
+    const ap_trampoline_len = @intFromPtr(__kernel_boot_trampoline_end) - @intFromPtr(__kernel_boot_trampoline_start);
+    const ap_trampoline_source_ptr: [*]const u8 = @ptrCast(__kernel_boot_trampoline_start);
     const ap_trampoline_ptr: [*]u8 = @ptrFromInt(arch.mem.direct_map_base + 0x8000);
     @memcpy(ap_trampoline_ptr[0..ap_trampoline_len], ap_trampoline_source_ptr[0..ap_trampoline_len]);
     for (cpu_list.items) |cpu| {
         if (cpu.type == .bsp) continue;
-        root.arch.x86_64.debug.markFb(0x0000FFFF);
 
         const ap_stack_ptr: *u64 = @ptrFromInt(arch.mem.direct_map_base + @intFromPtr(&ap_stack));
         const ap_init_stack = try allocator.alignedAlloc(
@@ -44,26 +42,21 @@ pub fn init() !void {
             .fromByteUnits(arch.mem.page.page_size),
             2 * arch.mem.page.page_size,
         );
-        root.arch.x86_64.debug.markFb(0x000000FF);
         ap_stack_ptr.* = @intFromPtr(ap_init_stack.ptr) + ap_init_stack.len - 0x10;
         const ap_entry_ptr: *u64 = @ptrFromInt(arch.mem.direct_map_base + @intFromPtr(&ap_entry));
         ap_entry_ptr.* = @intFromPtr(&apEntry);
 
-        root.arch.x86_64.debug.markFb(0x0000FF00);
         ap_gsbase = try arch.cpu.per_cpu.allocate(allocator);
         is_finished.store(false, .release);
 
-        root.arch.x86_64.debug.markFb(0x0000EEFF);
         ipi.sendRaw(@intCast(cpu.id), 0, .icr_high, .init);
         // TODO: delay 10ms
         ipi.sendRaw(@intCast(cpu.id), 0x8, .icr_high, .sipi);
         // ipi.sendRaw(@intCast(cpu.id), 0x8, .icr_high, .sipi);
 
-        root.arch.x86_64.debug.markFb(0x000000FF);
         while (!is_finished.load(.acquire)) {
             arch.@"asm".pause();
         }
-        root.arch.x86_64.debug.markFb(0);
     }
     all_finished.store(true, .release);
     // ipi.sendRaw(0, 33, .others, .normal);
@@ -99,8 +92,8 @@ fn apZigEntry() !void {
     unreachable;
 }
 
-extern const __kernel_boot_trampoline_start: [*]const u8;
-extern const __kernel_boot_trampoline_end: [*]const u8;
+const __kernel_boot_trampoline_start = @extern(*const u8, .{ .name = "__kernel_boot_trampoline_start", .visibility = .hidden });
+const __kernel_boot_trampoline_end = @extern(*const u8, .{ .name = "__kernel_boot_trampoline_end", .visibility = .hidden });
 extern fn ap_trampoline_start() callconv(.naked) noreturn;
 extern const ap_stack: u64;
 extern const ap_entry: u64;

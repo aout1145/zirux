@@ -30,7 +30,7 @@ SECTIONS {
     . = ALIGN(4K);
     __kernel_per_cpu_end = . + KERNEL_VADDR_BASE;
 
-    . = KERNEL_VADDR_TEXT + SIZEOF(.boot_trampoline) + SIZEOF(.boot) + SIZEOF(.per_cpu);
+    . = KERNEL_VADDR_BASE + .;
     . = ALIGN(4K);
 
     __kernel_init_start = .;
@@ -42,7 +42,7 @@ SECTIONS {
 
     __kernel_text_start = .;
     .text ALIGN(4K) : AT (ADDR(.text) - KERNEL_VADDR_BASE) {
-        *(.text)
+        *(.text .text.*)
         *(.ltext)
     }
     . = ALIGN(4K);
@@ -50,14 +50,14 @@ SECTIONS {
 
     __kernel_rodata_start = .;
     .rodata ALIGN(4K) : AT (ADDR(.rodata) - KERNEL_VADDR_BASE) {
-        *(.rodata)
+        *(.rodata .rodata.*)
     }
     . = ALIGN(4K);
     __kernel_rodata_end = .;
 
     __kernel_data_start = .;
     .data ALIGN(4K) : AT (ADDR(.data) - KERNEL_VADDR_BASE) {
-        *(.data)
+        *(.data .data.*)
         *(.ldata)
     }
     . = ALIGN(4K);
@@ -66,7 +66,7 @@ SECTIONS {
     __kernel_bss_start = .;
     .bss ALIGN(4K) : AT (ADDR(.bss) - KERNEL_VADDR_BASE) {
         *(COMMON)
-        *(.bss)
+        *(.bss .bss.*)
         *(.lbss)
     }
     . = ALIGN(4K);

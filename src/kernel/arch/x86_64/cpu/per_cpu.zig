@@ -5,16 +5,22 @@ const assert = std.debug.assert;
 
 pub const section = ".per_cpu";
 
-extern const __kernel_per_cpu_start: [*]const u8;
-extern const __kernel_per_cpu_end: [*]const u8;
+const __kernel_per_cpu_start = @extern(*const u8, .{
+    .name = "__kernel_per_cpu_start",
+    .visibility = .hidden,
+});
+const __kernel_per_cpu_end = @extern(*const u8, .{
+    .name = "__kernel_per_cpu_end",
+    .visibility = .hidden,
+});
 
 pub fn allocate(gpa: std.mem.Allocator) !u64 {
     // Allocator memory for per-cpu area
-    const len = @intFromPtr(&__kernel_per_cpu_end) - @intFromPtr(&__kernel_per_cpu_start);
+    const len = @intFromPtr(__kernel_per_cpu_end) - @intFromPtr(__kernel_per_cpu_start);
     const mem = try gpa.alignedAlloc(u8, .fromByteUnits(arch.mem.page.page_size), len);
-    const init_ptr: [*]const u8 = @ptrCast(&__kernel_per_cpu_start);
+    const init_ptr: [*]const u8 = @ptrCast(__kernel_per_cpu_start);
     @memcpy(mem, init_ptr[0..len]);
-    return @intFromPtr(mem.ptr) - (@intFromPtr(&__kernel_per_cpu_start) - arch.mem.kernel_base);
+    return @intFromPtr(mem.ptr) - (@intFromPtr(__kernel_per_cpu_start) - arch.mem.kernel_base);
 }
 
 pub inline fn init(gs_base: u64) void {

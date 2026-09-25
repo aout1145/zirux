@@ -17,8 +17,6 @@ pub fn init(fb_info: arch.boot.defs.FrameBufferInfo) !void {
         );
         const buffer: [*]u8 = @ptrFromInt(io_region.base);
 
-        @memset(buffer[0..fb_info.frame_buffer_size], 0);
-
         const framebuffer = try allocator.create(fb.FrameBuffer);
         framebuffer.* = .{
             .buffer = buffer[0..fb_info.frame_buffer_size],
