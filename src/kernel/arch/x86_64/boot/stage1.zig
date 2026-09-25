@@ -18,7 +18,7 @@ pub fn _start() linksection(".boot") callconv(.naked) noreturn {
         \\call kernelEntry
         :
         : [new_stack] "r" (@intFromPtr(&boot_stack) + boot_stack.len - 0x10),
-    );
+        : .{ .rdi = true });
 }
 
 export fn kernelEntry(boot_info: *defs.BootInfo) linksection(".boot") callconv(.{ .x86_64_sysv = .{} }) noreturn {

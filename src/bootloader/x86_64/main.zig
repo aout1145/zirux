@@ -142,24 +142,43 @@ fn bootKernel(header: std.elf.Header) !noreturn {
         } else |_| {}
     }
 
-    while (true) {
-        // memory map
-        const map_info = try bs.getMemoryMapInfo();
-        const map_size = (map_info.len + 2) * map_info.descriptor_size;
-        const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
-        const map = try bs.getMemoryMap(map_buffer);
-        boot_info.memory_map = .{
-            .base = @intFromPtr(map.ptr),
-            .len = map.info.len,
-            .descriptor_size = map.info.descriptor_size,
-            .descriptor_version = map.info.descriptor_version,
-        };
+    // {
+    //     const map_info = try bs.getMemoryMapInfo();
+    //     const map_size = (map_info.len + 2) * map_info.descriptor_size;
+    //     const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
+    //     const map = try bs.getMemoryMap(map_buffer);
+    //     var iter = map.iterator();
+    //     while (iter.next()) |desc| {
+    //         if (!desc.attribute.memory_runtime) continue;
+    //         var buf: [256]u8 = undefined;
+    //         const utf8str = try std.fmt.bufPrintZ(&buf, "{s} {s} 0x{x} {} \r\n", .{
+    //             if (desc.attribute.memory_runtime) "RT" else "",
+    //             @tagName(desc.type),
+    //             desc.physical_start,
+    //             desc.number_of_pages,
+    //         });
+    //         const con_out = uefi.system_table.con_out.?;
+    //         var utf16str: [256]u16 = undefined;
+    //         @memset(&utf16str, 0);
+    //         _ = try std.unicode.utf8ToUtf16Le(&utf16str, utf8str);
+    //         _ = con_out.outputString(@ptrCast(&utf16str)) catch {};
+    //     }
+    // }
 
-        // exit boot services
-        if (bs.exitBootServices(uefi.handle, map.info.key)) {
-            break;
-        } else |_| {}
-    }
+    // memory map
+    const map_info = try bs.getMemoryMapInfo();
+    const map_size = (map_info.len + 2) * map_info.descriptor_size;
+    const map_buffer = try bs.allocatePool(.boot_services_data, map_size);
+    const map = try bs.getMemoryMap(map_buffer);
+    boot_info.memory_map = .{
+        .base = @intFromPtr(map.ptr),
+        .len = map.info.len,
+        .descriptor_size = map.info.descriptor_size,
+        .descriptor_version = map.info.descriptor_version,
+    };
+
+    // exit boot services
+    try bs.exitBootServices(uefi.handle, map.info.key);
 
     // jump to kernel
     const EntryFunc = fn (*defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn;

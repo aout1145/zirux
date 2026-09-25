@@ -15,15 +15,12 @@ var reserved: []Region = undefined;
 var reserved_count: usize = 0;
 var is_expanding: bool = false;
 
-const Region = packed struct(u128) {
-    page_index: hal_page.PageIndex,
+const Region = struct {
+    base: hal_page.PhysAddr,
     len: usize,
     type: RegionType,
-    pub inline fn base(region: *const Region) hal_page.PhysAddr {
-        return @as(u64, region.page_index) << hal_page.page_shift;
-    }
 };
-pub const RegionType = enum(@Int(.unsigned, 64 - @bitSizeOf(hal_page.PageIndex))) {
+pub const RegionType = enum {
     /// The region can be used now
     usable,
     /// The region is unusable now, but it will be usable later
@@ -36,7 +33,11 @@ pub const RegionType = enum(@Int(.unsigned, 64 - @bitSizeOf(hal_page.PageIndex))
     sentinel,
 };
 const sentinel_region: Region = .{
-    .page_index = std.math.maxInt(hal_page.PageIndex),
+    .base = std.mem.alignBackward(
+        hal_page.PhysAddr,
+        std.math.maxInt(hal_page.PhysAddr),
+        hal_page.page_size,
+    ),
     .len = 0,
     .type = .sentinel,
 };
@@ -58,60 +59,64 @@ pub fn switchToBuddy() void {
     var max_paddr: hal_page.PhysAddr = 0;
     for (memory[0 .. memory_count + 1]) |region| {
         if (region.type != .usable and region.type != .no_alloc) continue;
-        assert(region.base() % hal_page.page_size == 0);
+        assert(region.base % hal_page.page_size == 0);
         assert(region.len % hal_page.page_size == 0);
-        max_paddr = @max(max_paddr, region.base() + region.len);
+        max_paddr = @max(max_paddr, region.base + region.len);
     }
     buddy.init(@intCast(max_paddr / hal_page.page_size));
+    root.arch.x86_64.debug.markFb(0);
 
     // Use rawFree to prevent zig from filling the released memory with 0xAA
     if (memory.len != init_regions_count) {
         allocator.rawFree(@ptrCast(memory), .fromByteUnits(requested_align), 0);
     }
-    if (reserved.len != init_regions_count) {
-        allocator.rawFree(@ptrCast(reserved), .fromByteUnits(requested_align), 0);
-    }
+    root.arch.x86_64.debug.markFb(0x0000FF00);
+    // if (reserved.len != init_regions_count) {
+    //     allocator.rawFree(@ptrCast(reserved), .fromByteUnits(requested_align), 0);
+    // }
+    root.arch.x86_64.debug.markFb(0x00FF0000);
 
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable and region.type != .no_alloc) continue;
-        assert(region.base() % hal_page.page_size == 0);
+        assert(region.base % hal_page.page_size == 0);
         assert(region.len % hal_page.page_size == 0);
 
-        var base = region.base();
-        while (true) {
-            var min_base: hal_page.PhysAddr = std.math.maxInt(hal_page.PhysAddr);
-            var min_len: ?usize = null;
+        const region_end = region.base + region.len;
+        var base = region.base;
+        while (base < region_end) {
+            var free_end: hal_page.PhysAddr = region_end;
+            var covered_end: ?hal_page.PhysAddr = null;
             for (reserved[0..reserved_count]) |rsvd_region| {
                 if (rsvd_region.len == 0) continue;
-                assert(rsvd_region.base() % hal_page.page_size == 0);
-                assert(rsvd_region.len % hal_page.page_size == 0);
-                if (rsvd_region.base() >= base and rsvd_region.base() < region.base() + region.len) {
-                    if (rsvd_region.base() < min_base) {
-                        min_base = rsvd_region.base();
-                        min_len = rsvd_region.len;
-                    }
+                const rsvd_base = rsvd_region.base;
+                const rsvd_end = rsvd_base + rsvd_region.len;
+                if (rsvd_end <= base or rsvd_base >= region_end) continue;
+                if (rsvd_base <= base) {
+                    const end = @min(rsvd_end, region_end);
+                    covered_end = if (covered_end) |e| @max(e, end) else end;
+                } else {
+                    free_end = @min(free_end, rsvd_base);
                 }
             }
-            if (min_len != null) {
-                buddy.add(
-                    @truncate(base >> hal_page.page_shift),
-                    (min_base - base) / hal_page.page_size,
-                );
-                base = min_base + min_len.?;
-            } else {
-                buddy.add(
-                    @truncate(base >> hal_page.page_shift),
-                    (region.base() + region.len - base) / hal_page.page_size,
-                );
-                break;
+            if (covered_end) |end| {
+                base = end;
+                continue;
             }
+            if (free_end > base) {
+                buddy.add(
+                    @truncate(base >> hal_page.page_shift),
+                    (free_end - base) / hal_page.page_size,
+                );
+            }
+            base = free_end;
         }
     }
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 }
 
 /// Map all memory into direct mapping area
 pub fn makeDirectMap(page_table: mem.page_table.PageTablePtr) !void {
-    var base: hal_page.PhysAddr = memory[0].base();
+    var base: hal_page.PhysAddr = memory[0].base;
     var len: usize = 0;
 
     var usable_mem: usize = 0;
@@ -124,7 +129,7 @@ pub fn makeDirectMap(page_table: mem.page_table.PageTablePtr) !void {
         //     "memory: 0x{x} - 0x{x}",
         //     .{ region.base, region.base + region.len },
         // );
-        assert(region.base() % hal_page.page_size == 0);
+        assert(region.base % hal_page.page_size == 0);
         assert(region.len % hal_page.page_size == 0);
 
         if (region.type == .no_map) {
@@ -133,7 +138,7 @@ pub fn makeDirectMap(page_table: mem.page_table.PageTablePtr) !void {
         }
         usable_mem += region.len;
 
-        if (base + len != region.base()) {
+        if (base + len != region.base) {
             // log.debug(@src(), "mapped memory: 0x{x} - 0x{x}", .{ base, base + len });
             try page_table.mapRange(
                 allocator,
@@ -149,7 +154,7 @@ pub fn makeDirectMap(page_table: mem.page_table.PageTablePtr) !void {
                 },
             );
 
-            base = region.base();
+            base = region.base;
             len = region.len;
         } else {
             len += region.len;
@@ -167,10 +172,10 @@ pub fn makePageMetadata(page_table: mem.page_table.PageTablePtr) !void {
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable and region.type != .no_alloc) continue;
 
-        assert(region.base() % hal_page.page_size == 0);
+        assert(region.base % hal_page.page_size == 0);
         assert(region.len % hal_page.page_size == 0);
 
-        max_paddr = @max(max_paddr, region.base() + region.len);
+        max_paddr = @max(max_paddr, region.base + region.len);
     }
 
     const matadata_num = max_paddr / hal_page.page_size;
@@ -179,11 +184,21 @@ pub fn makePageMetadata(page_table: mem.page_table.PageTablePtr) !void {
         matadata_num * @sizeOf(mem.page.PageMeta),
         hal_page.page_size,
     );
-    const metadata = try allocator.alignedAlloc(
-        u8,
-        .fromByteUnits(hal_page.page_size),
-        metadata_size,
-    );
+    const metadata = blk: inline for ([_]hal_page.PageLevel{ .level2, .level1 }) |level| {
+        if (level.pageSize()) |page_size| {
+            if (allocator.alignedAlloc(
+                u8,
+                .fromByteUnits(page_size),
+                metadata_size,
+            )) |metamem| {
+                break :blk metamem;
+            } else |err| {
+                if (level == .level1) {
+                    return err;
+                }
+            }
+        }
+    };
     @memset(metadata, 0);
     try page_table.mapRange(
         allocator,
@@ -216,16 +231,19 @@ fn update(array: *[]Region, count: *usize, base: hal_page.PhysAddr, len: usize, 
             array.len * 2,
         );
         @memcpy(new_arr[0..array.len], array.*);
-        if (array.len != init_regions_count) {
-            allocator.free(array.*);
-        }
+        // Allocator.free will use array.*
+        // So we should update it first, then free old_arr
+        const old_arr = array.*;
         array.* = new_arr;
+        if (old_arr.len != init_regions_count) {
+            allocator.free(old_arr);
+        }
         // log.debug(@src(), "expanded", .{});
         is_expanding = false;
     }
     assert(array.len > count.*);
     array.*[count.*] = .{
-        .page_index = @truncate(base >> hal_page.page_shift),
+        .base = base,
         .len = len,
         .type = @"type",
     };
@@ -245,20 +263,18 @@ pub inline fn reserve(base: hal_page.PhysAddr, len: usize) Allocator.Error!void 
 fn isReserved(base: hal_page.PhysAddr, len: usize) bool {
     for (reserved[0..reserved_count]) |region| {
         if (region.len == 0) continue;
-        if (base < region.base() + region.len and base + len > region.base()) {
+        if (base < region.base + region.len and base + len > region.base) {
             return true;
         }
     }
     return false;
 }
 /// alloc() ensures reserved_region are contained by memory_region
-fn alloc(unaligned_len: usize, unaligned_align: usize) ?hal_page.PhysAddr {
-    const len = std.mem.alignForwardAnyAlign(usize, unaligned_len, hal_page.page_size);
-    const @"align" = std.mem.alignForwardAnyAlign(usize, unaligned_align, hal_page.page_size);
+fn alloc(len: usize, @"align": usize) ?hal_page.PhysAddr {
     for (memory[0..memory_count]) |region| {
         if (region.type != .usable) continue;
-        var base = std.mem.alignForwardAnyAlign(hal_page.PhysAddr, region.base(), @"align");
-        while (base + len <= region.base() + region.len) {
+        var base = std.mem.alignForward(hal_page.PhysAddr, region.base, @"align");
+        while (base + len <= region.base + region.len) {
             if (!isReserved(base, len)) {
                 return if (reserve(base, len)) base else |_| null;
             }
@@ -267,11 +283,12 @@ fn alloc(unaligned_len: usize, unaligned_align: usize) ?hal_page.PhysAddr {
     }
     return null;
 }
-fn free(base: hal_page.PhysAddr, unaligned_len: usize) void {
-    const len = std.mem.alignForwardAnyAlign(usize, unaligned_len, hal_page.page_size);
+fn free(base: hal_page.PhysAddr, len: usize) void {
+    // log.debug(@src(), "free: 0x{x} {}", .{ base, len });
     for (reserved[0..reserved_count]) |*region| {
-        if (region.base() == base and region.len == len) {
-            region.* = .{ .page_index = 0, .len = 0, .type = .no_map };
+        // log.debug(@src(), "region: 0x{x} {}", .{ region.base, region.len });
+        if (region.base == base and region.len == len) {
+            region.* = .{ .base = 0, .len = 0, .type = .no_map };
             return;
         }
     }

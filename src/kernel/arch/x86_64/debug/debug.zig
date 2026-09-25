@@ -3,6 +3,7 @@ const root = @import("root");
 const arch = root.arch.x86_64;
 
 const serial = @import("serial.zig");
+const framebuffer = @import("fb.zig");
 
 var print_lock: root.sync.SpinLockIrq = .unlocked;
 var serial_com1: ?serial.Writer = null;
@@ -34,6 +35,15 @@ fn printlnUnlocked(prefix: ?[]const u8, comptime fmt: []const u8, args: anytype)
     }
 }
 
+var debug_fb: ?[]u32 = null;
+pub fn initFb(base: u64, len: u64) void {
+    const fb: [*]u32 = @ptrFromInt(base);
+    debug_fb = fb[0..len];
+}
+pub fn markFb(color: u32) void {
+    @memset(debug_fb orelse return, color);
+}
+
 pub var panic_flag: std.atomic.Value(bool) = .init(false);
 pub inline fn setPanicFlag() void {
     panic_flag.store(true, .release);
@@ -43,7 +53,11 @@ pub fn panic(msg: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noreturn {
     panic_flag.store(true, .release);
     @atomicStore(root.sync.SpinLockIrq, &print_lock, .locked, .release);
 
-    arch.intr.ipi.sendRaw(0, 0, .others, .nmi);
+    // markFb(0x00AA00AA);
+
+    if (arch.cpu.smp.cpu_list.items.len != 0) {
+        arch.intr.ipi.sendRaw(0, 0, .others, .nmi);
+    }
 
     printlnUnlocked(null, "\nKERNEL PANIC on CPU#{} : {s}", .{ arch.cpu.per_cpu.getLocalCpuId(), msg });
 

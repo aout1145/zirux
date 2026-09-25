@@ -16,7 +16,12 @@ inline fn syscall(number: u64, args: *const [6]u64) u64 {
           [arg3] "{r10}" (args[3]),
           [arg4] "{r8}" (args[4]),
           [arg5] "{r9}" (args[5]),
-    );
+        : .{
+          .rcx = true,
+          .r11 = true,
+          .cc = true,
+          .memory = true,
+        });
 }
 
 export var stack: [8192]u8 align(4096) = undefined;

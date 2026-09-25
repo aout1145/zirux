@@ -215,7 +215,6 @@ fn allocFunc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) 
             // log.debug(@src(), "{} {x}", .{ order(len), meta_vaddr });
             break :blk @ptrFromInt(meta_vaddr + buddy.orderSize(order(len)) * hal_page.page_size);
         } else return null;
-        @memset(ptr[0..len], 0xAA);
         return ptr;
     } else {
         if (bucketIndex(len)) |bucket_index| {
@@ -231,7 +230,6 @@ fn allocFunc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) 
 fn freeFunc(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, _: usize) void {
     if (is_debug) {
         assert(hal_page.page_size >= alignment.toByteUnits());
-        @memset(memory, 0xFE);
         if (memory.len <= hal_page.page_size) {
             const bucket_index = bucketIndex(memory.len).?;
             assert(bucket_sizes[bucket_index] >= alignment.toByteUnits());

@@ -9,7 +9,7 @@ const defs = @import("defs.zig");
 
 var kernel_stack: [4 * arch.mem.page.page_size]u8 align(arch.mem.page.page_size) = undefined;
 
-pub fn _start(_: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
+pub fn _start(boot_info: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
     // Switch to stack in high address
     asm volatile (
         \\cli
@@ -17,6 +17,7 @@ pub fn _start(_: *defs.BootInfo) callconv(.{ .x86_64_sysv = .{} }) noreturn {
         \\call kernelEntry2
         :
         : [new_stack] "r" (@intFromPtr(&kernel_stack) + kernel_stack.len - 0x10),
+          [_] "{rdi}" (boot_info),
     );
     unreachable;
 }
@@ -35,20 +36,27 @@ fn kernelMain(boot_info_ptr: *defs.BootInfo) !void {
         return error.InvalidMagic;
     }
 
+    // Initialize memory
     // Copy boot_info from uefi's ptr
     var boot_info = boot_info_ptr.*;
     try initMem(&boot_info);
     const system_table: *std.os.uefi.tables.SystemTable = @ptrFromInt(boot_info.uefi_system_table_base);
     try root.drivers.acpi.initFromUefiSystemTable(system_table);
-
-    try arch.cpu.per_cpu.initFull();
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 
     // Initialize other devices and subsystems
+    try arch.cpu.per_cpu.initFull();
+    root.arch.x86_64.debug.markFb(0);
     try root.drivers.time.hpet.init();
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     try arch.intr.init();
+    root.arch.x86_64.debug.markFb(0);
     try arch.syscall.init();
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     try arch.time.init();
+    root.arch.x86_64.debug.markFb(0);
     try root.drivers.framebuffer.uefi_gop.init(boot_info.framebuffer_info);
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
 
     log.info(@src(), "Initialized successfully.", .{});
 
@@ -67,6 +75,9 @@ fn initMem(boot_info: *defs.BootInfo) !void {
 
     // Initialize part of memory first
     mem.bootmm.init(&init_mm);
+    // Reserve memory low 1mb for compatibility
+    try mem.bootmm.reserve(0, 1 * mem.mib);
+    // Add system memory
     const info = &boot_info.memory_map;
     for (0..info.len) |i| {
         const desc: *uefi.tables.MemoryDescriptor = @ptrFromInt(info.base + i * info.descriptor_size);
@@ -90,7 +101,9 @@ fn initMem(boot_info: *defs.BootInfo) !void {
                     .no_alloc,
                 );
             },
-            .acpi_reclaim_memory => {
+            .acpi_reclaim_memory,
+            .acpi_memory_nvs,
+            => {
                 try mem.bootmm.add(
                     desc.physical_start,
                     desc.number_of_pages * arch.mem.page.page_size,
@@ -100,7 +113,6 @@ fn initMem(boot_info: *defs.BootInfo) !void {
             .runtime_services_code,
             .runtime_services_data,
             .unusable_memory,
-            .acpi_memory_nvs,
             .reserved_memory_type,
             => {
                 try mem.bootmm.add(
@@ -117,12 +129,6 @@ fn initMem(boot_info: *defs.BootInfo) !void {
                 });
             },
         }
-    }
-    // Reserve memory under 1mb for compatibility
-    // TODO：improve algorithm to support:
-    //       try mem.bootmm.reserve(0, 1 * mem.mib);
-    for (0..mem.mib / arch.mem.page.page_size) |i| {
-        try mem.bootmm.reserve(i * arch.mem.page.page_size, arch.mem.page.page_size);
     }
     // Initialize per_cpu areas and GDT
     arch.cpu.per_cpu.init(try arch.cpu.per_cpu.allocate(mem.bootmm.allocator));
@@ -197,10 +203,10 @@ fn initMem(boot_info: *defs.BootInfo) !void {
                 .userspace = false,
                 .global = true,
                 .cache_policy = blk: {
-                    if (desc.attribute.wb) {
-                        break :blk .write_back;
-                    } else if (desc.attribute.wc) {
+                    if (desc.attribute.wc) {
                         break :blk .write_combining;
+                    } else if (desc.attribute.wb) {
+                        break :blk .write_back;
                     } else if (desc.attribute.wt) {
                         break :blk .write_through;
                     } else {
@@ -230,12 +236,31 @@ fn initMem(boot_info: *defs.BootInfo) !void {
         },
     });
     boot_info.uefi_system_table_base = system_table_vaddr;
+
+    // Initialize debugging framebuffer
+    const fbi = boot_info.framebuffer_info;
+    if (fbi.available) {
+        const paddr = fbi.frame_buffer_base;
+        const bytes = std.mem.alignForward(usize, fbi.frame_buffer_size, arch.mem.page.page_size);
+        pt.mapRange(
+            mem.bootmm.allocator,
+            arch.mem.direct_map_base + paddr,
+            paddr,
+            bytes / arch.mem.page.page_size,
+            .{ .writable = true, .executable = false, .userspace = false, .global = true, .cache_policy = .uncacheable },
+        ) catch |e| log.info(@src(), "fb map err {s}", .{@errorName(e)});
+        arch.debug.initFb(arch.mem.direct_map_base + paddr, fbi.frame_buffer_size / 4);
+        root.arch.x86_64.debug.markFb(0);
+    }
+
     // Finally, switch to new page table
     arch.mem.page.writePagingBase(@intFromPtr(pt.global_table) - arch.mem.direct_map_base);
 
+    root.arch.x86_64.debug.markFb(0xFFFFFFFF);
     // Deinitialize bootmm, switch to buddy
     mem.bootmm.switchToBuddy();
 
+    root.arch.x86_64.debug.markFb(0);
     // After that, we enable full memory space!
 }
 
